@@ -149,10 +149,112 @@
 - 이 기능은 오늘의 학습(M7) 자동 체인에는 포함하지 않음 — M11(텍스트 붙여넣기 학습)과 동일하게 사용자가 특정 수행평가 지문을 직접 골라 붙여넣는 능동적 기능이라 정규 자동 루틴과는 성격이 다르다고 판단(M11과 동일한 결정 근거 재사용).
 - **완료조건 검증**: `tests/test_school_assignment_flow.py`(단어 추출 후 카드→문법해설→예상문제 전체 플로우, 추출 단어 없을 때 카드 단계 스킵, 너무 짧은 지문 거부, 예상문제 생성 실패 시 문법해설까지만 완료 처리) 통과, 전체 pytest 60건 통과. 이어서 `scripts/simulate_school_assignment.py`로 실제 Gemini + 실제 Supabase를 통해 산호초 백화현상 지문으로 단어카드(1개) → 문법해설(동격의 콤마/주격 관계대명사) → 예상문제 3문항(오답1/정답1/오답1) 순으로 끝까지 진행, `school_assignments`에 `source_char_count=315`, `extracted_word_count=1`, `exam_question_count=3`, `exam_correct_count=1`이 정확히 저장됨을 DB에서 직접 확인.
 
-## 진행 중 / 다음 단계
+### M13 — 학교 시험 관리 확장 (시험/단원/자료/선생님강조/D-Day/시험직전복습)
+- `school_exams` 테이블(`migrations/0012_school_exams.sql`) — 과목/시험일/단원범위/선생님강조사항. `school_assignments`(M12)에 `exam_id`(연결된 시험, nullable)와 `question_details`(jsonb — 예상문제별 정오답 스냅샷) 컬럼을 추가해 "자료"를 시험에 묶는다. 시험직전복습 이력은 원본 오답 기록을 건드리지 않고 별도 `school_exam_reviews`(문항수/정답수)에 로그만 남긴다.
+- `/시험등록`(`/examregister`): 과목 → 날짜(YYYY-MM-DD, 형식 오류 시 재입력 요청) → 단원범위 → 선생님강조사항(선택, "없음" 입력 가능) 순서로 대화형 등록. 다른 대화형 온보딩(나이입력 등)과 동일하게 프로세스 메모리 세션(`app/school_exam/registration.py`)으로 단계 추적.
+- `/시험목록`(`/examlist`): 등록된 시험을 날짜순으로 D-Day(`D-n`/`D-DAY`/`D+n`)와 함께 표시.
+- **자료(M12)를 시험에 자동 연결**: `/수행평가` 시작 시 예정된 시험이 1개면 별도 확인 없이 자동으로 그 시험 자료로 연결(섹션7 자동화 원칙 — 선택지가 하나뿐이면 묻지 않음), 2개 이상이면 실제 선택이 필요하므로 인라인 키보드로 물어봄("연결 안함"도 가능), 0개면 기존 M12와 동일하게 바로 지문 입력을 받는다. 예상 시험문제의 정오답은 문항별로 `question_details`에 스냅샷 저장.
+- `/시험직전복습`(`/examreview`): 예정된 시험이 1개면 자동 선택, 2개 이상이면 인라인 키보드로 선택. 선택된 시험에 연결된 모든 자료(`school_assignments`)에서 **오답이었던 예상문제만** 모아(`school_assignment_repo.get_wrong_questions_for_exam`) 다시 객관식으로 풀게 한다 — 단원범위/선생님강조사항도 복습 시작 시 함께 보여줌. 연결된 자료가 없거나 오답이 하나도 없으면 그 사실을 안내하고 종료(fail-open, 다른 기능들과 동일 원칙).
+- 시험직전복습에서 다시 틀려도 원본 `question_details`의 `is_correct`는 수정하지 않음(원본은 최초 학습 시점의 기록으로 유지, 복습 결과는 `school_exam_reviews`에 별도 로그) — "오답노트"라는 원본 데이터의 무결성을 지키기 위한 결정.
+- 하루 횟수 제한 없음 — 시험 대비 특성상 시험일이 다가올수록 여러 번 복습해야 자연스럽다고 판단.
+- **완료조건 검증**: `tests/test_school_exam_flow.py`(시험등록 전체 플로우+날짜 형식 오류 재입력, 시험목록 표시/빈 목록 안내, 자료의 단일/복수 시험 자동연결·선택, 시험직전복습 오답 재출제 전체 플로우, 복수 시험 중 선택) 9건 포함 pytest 총 69건 통과. 이어서 `scripts/simulate_school_exam.py`로 실제 Gemini + 실제 Supabase를 통해 (1) "생물" 시험 등록(D-7), (2) 산림벌채 지문으로 수행평가 자료 학습 시 시험이 1개뿐이라 자동연결됨, (3) 예상문제 3문항을 일부러 전부 오답 처리, (4) `/시험직전복습` 실행 시 방금 튤린 3문항이 그대로 다시 출제되고 단원범위·선생님강조사항이 함께 노출됨을 확인. DB에서 `school_assignments.exam_id=1`·`question_details` 3건 저장, `school_exam_reviews`에 `question_count=3, correct_count=1` 정확히 기록됨을 직접 확인.
 
-- **M13 학교 시험 관리 확장**(시험/단원/자료/선생님강조/D-Day/시험직전복습)부터는 아직 미구현.
-- 실제 텔레그램/Supabase/Gemini 계정 연동 테스트는 완료됨 (아래 "실제 계정 연동 후 End-to-End 검증" 참고).
+### M14 — CHILD_BRIDGE 모드 (11세)
+- **범위 확인**: 기획서 원문에 CHILD_BRIDGE와 GENERAL의 차이가 명시되어 있지 않아, 진행 전 사용자에게 직접 확인함. 결정: **톤/난이도만 다르게, 핵심 학습 기능(단어/문법/해석/회화 등)과 메뉴·명령어 구조는 GENERAL과 완전히 동일하게 유지**. 구체적으로 (1) 어려운 단어/문법을 11세가 이해하기 쉬운 표현으로 설명 (2) 이모티콘과 함께 친근한 톤 (3) 문제·지문 난이도를 낮게 조정 (4) 피드백을 짧고 쉽게 (5) 위험하거나 부적절한 콘텐츠 제외 — 이 5가지를 만족해야 함. (참고: 나이 구간은 3단계 — 10세 이하 CHILD_BEGINNER/M15, 11세 CHILD_BRIDGE/M14, 12세 이상 GENERAL — `app/modes.py`.)
+- **콘텐츠뱅크를 학습모드별로 분리**(`migrations/0013_child_bridge_mode.sql`): `words`/`grammar_questions`/`reading_passages`에 `learning_mode`(기본값 `GENERAL`, 기존 행 전부 하위호환 유지) 컬럼 추가. `words`의 유일성 범위를 `word` 단일컬럼에서 `(word, learning_mode)` 복합으로 변경 — 같은 단어(예: "apple")라도 GENERAL/CHILD_BRIDGE가 각자 독립된 콘텐츠를 가질 수 있어야 하기 때문(그렇지 않으면 먼저 생성된 쪽이 단어를 선점해 다른 모드에서 그 단어를 영영 못 보게 됨).
+- **콘텐츠 생성 프롬프트에 톤 지침 주입**(`app/content/generator.py`의 `CHILD_BRIDGE_TONE_INSTRUCTION`/`tone_note()`): "11세가 이해하기 쉽게, 이모티콘 섞어서, 난이도 한 단계 쉽게, 위험한 주제 금지" 지침을 CHILD_BRIDGE일 때만 프롬프트에 추가 — 사전생성 콘텐츠뱅크(단어/문법/해석 지문)와 세션 중 실시간 생성되는 AI 응답(회화 오프닝/응답, 해석 힌트/피드백, 텍스트학습·수행평가 단어추출/피드백, Planner 포커스 메시지) **전체**에 공통 재사용.
+- **모든 콘텐츠 조회 경로에 모드 필터 추가**: `get_new_words`/`get_distractor_meanings`/`get_random_questions`/`get_random_passage`/`get_word_ids`가 전부 `learning_mode` 파라미터(기본값 `GENERAL`)를 받아 쿼리를 좁힘. 라우터의 모든 호출부(단어학습/단어시험/문법학습/해석/텍스트학습/수행평가)에서 `user["learning_mode"]`를 그대로 넘겨줌 — 마침 DB 컬럼값과 앱의 `learning_mode` 값이 1:1로 같아 별도 매핑이 필요 없었음. `app/vocab/service.WordItem`에 `learning_mode` 필드를 추가해, 카드 진행 중(모르는단어→객관식) 추가 조회가 필요할 때도 세션에 이미 담긴 모드 값을 그대로 재사용(별도 DB 재조회 없음).
+- **콘텐츠뱅크 생성 스크립트 확장**(`scripts/generate_content_bank.py --mode CHILD_BRIDGE`): 레벨당 소량(단어3/문법2/해석1)으로 실제 Gemini 호출해 CHILD_BRIDGE 콘텐츠뱅크를 별도로 채움 — GENERAL 콘텐츠와 완전히 독립적으로 누적됨(카운트 리포트도 `레벨/모드`로 분리 표시).
+- **완료조건 검증**: `tests/test_child_bridge_mode.py`(나이→모드 매핑, `tone_note()` GENERAL/CHILD_BRIDGE 출력, 단어학습·문법학습·해석학습이 실제로 `learning_mode="CHILD_BRIDGE"`로 콘텐츠를 조회하는지, 회화 오프닝 생성 시 모드가 전달되는지) 8건 포함 pytest 총 77건 통과. 이어서 실제 Gemini로 `--mode CHILD_BRIDGE` 콘텐츠뱅크를 생성해 육안 검수(예: 단어 "Happy" 뜻 "기분이 아주 좋고 즐거운 상태를 말해요! 😊", 문법 개념설명 "🌟"/"🐾" 이모지 포함, 해석 지문 "My pet dog, Coco...🐶☀️") — GENERAL 콘텐츠 대비 톤 차이가 뚜렷함을 확인. `scripts/simulate_child_bridge.py`로 실제 신규 텔레그램 사용자(나이 11 입력)를 만들어 승인→CHILD_BRIDGE 배정→레벨진단→단어학습→문법학습→해석(힌트 2회+모범번역 공개)→회화 오프닝까지 실제 Gemini+Supabase로 전체 플로우를 실행, 전 구간에서 이모지 포함 친근한 톤과 실제 낮아진 난이도의 실시간 AI 응답을 확인.
+
+### M15 — CHILD_BEGINNER 모드 (10세 이하, Stage0~5)
+- **범위 확인**: Stage6(듣기말하기)는 TTS(M16, 이후 마일스톤)가 있어야 자연스러운 기능이라 이번엔 제외하고 진행할지 사용자에게 직접 확인 후 결정. **Stage0~5까지만 구현, Stage6은 M16 이후로 보류**.
+- **메뉴/커리큘럼을 GENERAL·CHILD_BRIDGE와 완전히 분리**(사용자가 명시적으로 요청한 대로): `app/child_menu.py`에 전용 리플라이 키보드(🎈 오늘 공부하기 / ⭐ 내 진도) 2버튼만 두는 아주 단순한 메뉴를 신설. 라우터에서 `user["learning_mode"] == "CHILD_BEGINNER"`면 GENERAL의 모든 명령어 분기(PLACEMENT_MODES 게이트) 이전에 완전히 별도 경로로 처리되어, 기존 메뉴/명령어와 전혀 섞이지 않는다.
+- **Stage0(알파벳)/Stage1(파닉스)은 AI 생성 없이 고정 커리큘럼**(`app/child_beginner/curriculum.py`): 26개 알파벳(글자+대표단어+이모지+한국어 뜻), 8개 파닉스 단어가족(-at/-an/-ig 등)을 레벨진단(M3)과 동일한 방식으로 코드에 정적 데이터로 둠 — 개수가 고정되어 있고 매번 달라질 이유가 없어 AI 호출 자체가 불필요하다고 판단(섹션16 원칙과 일치). 카드를 순서대로 보여준 뒤(각 카드마다 "다음" 버튼) 마지막에 5문항 객관식 퀴즈로 마무리.
+- **Stage2(기초단어)~Stage5(짧은지문)는 AI로 사전 생성**(`app/child_beginner/generator.py`, `scripts/generate_child_beginner_content.py`): CHILD_BRIDGE(M14)보다도 더 쉬운 톤 지침(초등 저학년 대상, 동물/가족/음식/색깔/숫자 같은 안전한 주제만)으로 단어/문장/QA/짧은지문+이해도질문을 생성해 `child_beginner_content` 테이블에 저장, 이후 실시간 사용자 요청 시에는 이 콘텐츠뱅크만 조회(AI 재호출 없음, 섹션16). 4개 stage 전부 "prompt(+지문) + 4지선다" 형태로 통일해, Stage0/1의 퀴즈 엔진과 동일한 채점 로직(`app/child_beginner/service.py`)을 재사용.
+- **진도 관리**: `users.child_stage`(현재 진행 단계, 0부터 시작)로 어디까지 왔는지 추적, `child_beginner_progress`에 단계별 최초 완료 시각을 남긴다. "🎈 오늘 공부하기"를 누르면 항상 현재 `child_stage`의 학습을 시작하고, 5문항(고정 커리큘럼은 랜덤 5문항 퀴즈, AI 콘텐츠는 뱅크에서 랜덤 5개)을 마치면 자동으로 다음 단계로 전진 — 학습 세션 하나당 한 단계만 진행하고 "오늘은 여기까지!"로 마무리해 어린이의 짧은 집중 시간에 맞춤(자동 체이닝 없음, M7의 "오늘의 학습"과는 다른 설계 — 근거는 아래 표 참고).
+- **완료조건 검증**: `tests/test_child_beginner_flow.py`(퀴즈 생성 로직, 카드→퀴즈 전환, 정답/오답 채점, stale 콜백 무시, AI 응답 검증 필터링, 나이 8→CHILD_BEGINNER 배정 후 Stage0 카드 시작, Stage0 전체 플로우로 child_stage 전진, Stage2 콘텐츠뱅크 기반 퀴즈, 콘텐츠 없을 때 안내, 진도 표시, 미인식 입력에도 어린이 메뉴만 노출) 13건 포함 pytest 총 90건 통과. 이어서 실제 Gemini로 Stage2~5 콘텐츠뱅크를 생성(스테이지당 6개)해 육안 검수(예: "I love red apples. They are sweet and yummy. 🍎" + "지문에 나온 과일은 무엇인가요?") — 안전하고 쉬운 주제만 나옴을 확인. `scripts/simulate_child_beginner.py`로 실제 신규 8세 사용자를 실제 Supabase로 만들어 Stage0→1→2→3→4→5를 전부 실제로 진행, 각 단계 완료마다 `users.child_stage`가 정확히 1씩 증가(0→6)하고 `child_beginner_progress`에 0~5 전 단계가 기록됨을 DB에서 직접 확인. 도중에 "이상한말"을 보내 GENERAL의 "이해하지 못했어요" 문구가 전혀 노출되지 않고 어린이 전용 메뉴만 뜨는 것도 확인(메뉴 완전 분리 요건 충족).
+
+### M16 — TTS 캐싱
+- **제공사 확인**: TTS는 새 외부 서비스/API 키가 필요한 사안이라 사용자에게 직접 확인 후 결정 — **Google Cloud Text-to-Speech**(Gemini/Supabase와 같은 생태계, API 키 방식이라 서비스어카운트 JSON 없이 간단히 연동 가능)를 선택.
+- `app/ai/tts_client.py`: Google Cloud TTS REST API(`text:synthesize`)를 API 키로 직접 호출(무거운 `google-cloud-texttospeech` 클라이언트 라이브러리 대신 이미 쓰고 있는 `httpx`로 구현, gemini_client와 달리 서비스어카운트 인증이 필요 없어 API 키 한 줄로 충분). 오디오 인코딩은 `OGG_OPUS`로 요청해 텔레그램 음성메시지(`sendVoice`)와 별도 변환 없이 바로 호환되게 함.
+- **캐싱**(`app/tts.py` + `app/repo/tts_cache.py` + `migrations/0015_tts_cache.sql`): 텍스트+언어+voice로 만든 sha256 해시를 키로 `tts_cache`(bytea 컬럼) 테이블에 오디오를 저장, 같은 텍스트 재요청 시 외부 API를 다시 부르지 않고 캐시를 반환(섹션16 AI/외부 API 호출 최소화 원칙과 동일하게 적용).
+- `app/telegram_client.py`에 `send_voice()` 추가 — `sendVoice`는 JSON이 아닌 multipart/form-data 업로드가 필요해 기존 `_post()` 헬퍼와 별도로 구현.
+- **첫 통합 지점: 단어 카드에 "🔊 발음 듣기" 버튼**(`_send_word_card`, M5/M11/M12에서 전부 재사용하는 공용 함수라 단어학습/텍스트붙여넣기/수행평가 전부에 자동 적용됨): 이 버튼은 카드에 대한 "답변"이 아니라 보조 액션이므로, 클릭해도 다른 버튼들과 달리 **카드 메시지를 지우지 않도록** 콜백 처리 순서를 조정(`_handle_callback_query`에서 `ttsword:` 콜백을 메시지 삭제 로직보다 먼저 분기) — 발음을 들어본 뒤에도 [아는단어]/[모르는단어]를 이어서 누를 수 있어야 하기 때문.
+- `GOOGLE_TTS_API_KEY`가 없으면(`.env`에 아직 미설정) 발음듣기 버튼을 눌러도 "아직 준비 중이에요" 안내만 뜨고 다른 기능에는 전혀 영향 없음 — 키가 없어도 서버가 죽지 않는 기존 원칙(M0)과 동일하게 적용.
+- **완료조건 검증**: `tests/test_tts.py`(캐시 키 결정성, 캐시 히트 시 외부 API 미호출, 캐시 미스 시 합성 후 저장) + `tests/test_word_pronunciation.py`(카드에 버튼 노출, TTS 미설정 시 안내 메시지, 정상 합성 시 음성 전송 및 카드 유지, 합성 실패 시 fail-open) 7건 포함 pytest 총 97건 통과. `migrations/0015_tts_cache.sql`을 실제 Supabase에 적용 완료.
+- **실제 Google Cloud TTS 키로 End-to-End 검증 완료(2026-09-08)**: 사용자가 Google Cloud Console에서 API 키를 발급(`GOOGLE_TTS_API_KEY`)해 `.env`에 등록. `scripts/verify_tts_e2e.py`로 실제 관리자 텔레그램 계정을 통해 (1) 단어 카드 전송 (2) 🔊 발음 듣기 첫 클릭 시 캐시 미스 → 실제 Google Cloud TTS 합성(예: "Obfuscate" 단어, 4282 bytes OGG_OPUS) → `tts_cache`에 저장 (3) 두 번째 클릭 시 캐시 히트로 즉시 재생 (4) 발음을 들어본 뒤에도 카드가 그대로 남아 [아는단어] 클릭으로 정상 진행됨을 확인. 실제 음성메시지 2건이 텔레그램에 정상 도착함을 사용자가 직접 확인.
+  - **키 발급 과정에서 겪은 시행착오**: 처음엔 Google AI Studio 스타일의 `AQ.Ab8R...` 형식 값과 OAuth 클라이언트 ID(`...apps.googleusercontent.com`)를 잘못 전달받음 — Cloud Console "사용자 인증 정보 만들기" 드롭다운에서 "API 키"가 아닌 다른 옵션을 선택했던 것으로 보임. 최종적으로 올바른 "API 키" 옵션에서 발급받은 `AIzaSy...` 형식(Cloud Console 표준 API 키 포맷) 값으로 정상 동작 확인.
+
+### M15 Stage6 — 듣기말하기 (M16 TTS 인프라 재사용)
+- **콘텐츠는 새로 만들지 않고 Stage2(기초단어) 콘텐츠뱅크를 재사용**: 이미 검증된 쉬운 단어 세트를 "읽기"가 아니라 "듣기"로 다시 연습하는 구조로 설계 — 별도 AI 생성 스크립트나 새 테이블이 필요 없어 구현 범위를 최소화.
+- **듣기**: 기존 Stage2~5 MCQ 엔진(`child_service.submit_quiz_answer` 등)을 그대로 재사용하되, 문제를 낼 때 단어 텍스트를 보여주지 않고 `tts.get_speech_audio()`로 실제 음성만 먼저 들려준 뒤(`send_voice`) 4지선다로 뜻을 맞히게 함 — 정답 로직은 완전히 동일, 라우터의 "표시 방식"만 분기(`_send_child_quiz_item(..., listening=True)`).
+- **말하기**: 발음 인식(STT)은 구축하지 않음 — 듣기 퀴즈 5문항이 끝나면 자동으로 "말하기 연습" 상태로 전환되어, 사용자가 방금 들은 단어들을 소리 내어 따라 말하고 **음성메시지를 녹음해서 보내면 채점 없이 완료 처리**한다(녹음해서 보내는 행위 자체가 연습이라고 보는 설계). 텍스트로 답하면 "목소리로 녹음해서 보내주세요"라고 다시 안내.
+- **새 메시지 타입 처리 추가**: 라우터가 지금까지 `message.text`만 다뤘는데, 이번에 처음으로 `message.voice`(음성메시지) 존재 여부를 확인하는 분기를 추가(`child_service.is_awaiting_speaking()`로 게이팅) — 다른 기능에는 영향 없음.
+- **완료조건 검증**: `tests/test_child_beginner_flow.py`에 Stage6 케이스 3건 추가(듣기 문제에서 단어 텍스트가 노출되지 않고 음성만 먼저 전송되는지, 5문항 완료 후 말하기 대기 상태로 전환되고 텍스트 응답은 재안내되는지, 실제 음성메시지 수신 시에만 완료되어 child_stage가 6→7로 전진하는지, 진도 화면에 "듣기 말하기" 항목이 뜨는지) 포함 pytest 총 100건 통과. 이어서 `scripts/simulate_child_beginner_stage6.py`로 이미 Stage0~5를 마친 실제 테스트 사용자를 이어서 진행 — **실제 Google Cloud TTS로 5개의 서로 다른 단어 음성(2701~3013 bytes, 전부 OGG_OPUS 포맷) 을 실시간 합성**해 듣기 퀴즈를 완료하고, 텍스트 응답 시 재안내 → 실제 음성메시지 수신 시 완료 → `child_stage` 6→7 전진 → 이후 재접속 시 "모든 단계 완료" 안내까지 확인. 남은 유일한 로드맵 항목(Stage6)까지 실제 검증 완료로 M15가 완전히 마무리됨.
+
+### M17 — AI 사용량 모니터링
+- **설계 방향 전환**: 기존 `learning_sessions.ai_call_count`는 "오늘의 학습(M7)" 세션에 진입했을 때만 증가하는 구조라(Planner에서만 실제로 사용), `/해석`·`/회화`·`/텍스트학습`처럼 오늘의 학습 밖에서 단독 호출되는 AI 기능들과 TTS(M16)까지 포함한 **프로젝트 전체 호출량**을 보려면 부족했음. 그래서 `learning_sessions.ai_call_count`는 그대로 두고(용도가 다름 — 오늘의 학습 세션 내 호출수), 별도로 **`ai_usage_log`** 테이블(모든 Gemini/TTS 호출을 시간순으로 기록)을 신설.
+- **계측 위치를 호출부가 아니라 클라이언트 레벨로 최소화**: 각 기능(회화/해석/문법생성/단어추출/수행평가분석 등 15곳 이상)마다 로깅 코드를 추가하는 대신, 모든 AI 호출이 공통으로 거치는 **`app/ai/gemini_client.py`의 `generate_text`/`generate_json`, `app/ai/tts_client.py`의 `synthesize_speech`** 딱 두 파일 세 곳에서만 성공 시 `ai_usage_repo.log_call()`을 호출 — 어떤 기능이 새로 추가되어도 자동으로 집계에 포함되고, 빠뜨릴 위험이 없음.
+- **사용자별이 아니라 프로젝트 전체 집계**: Gemini/Google Cloud TTS 무료 티어 한도는 API 키(프로젝트) 단위로 걸리지 사용자별이 아니기 때문(M9에서 `gemini-3.6-flash`가 프로젝트당 하루 20회로 막혔던 실측 사례와 동일한 전제) — `ai_usage_log`에 user_id를 남기지 않고 provider(gemini/google_tts)와 시각만 기록해 설계를 단순화.
+- 로깅 실패(DB 일시 오류 등)가 실제 AI 응답을 막지 않도록 try/except로 감싸 fail-open 처리 — AI 사용량 집계가 안 되는 것보다 학습 기능이 멈추는 게 훨씬 나쁘기 때문.
+- **관리자 명령어 `/AI사용량`(`/aiusage`)** 신설 — 오늘/이번달 Gemini·Google Cloud TTS 호출 수를 한 화면에 표시. 관리자 메뉴(`⚙️ 관리자`)에도 안내 추가.
+- **완료조건 검증**: `tests/test_ai_usage.py`(Gemini 텍스트/JSON 생성 성공 시 로깅 호출, TTS 합성 성공 시 로깅 호출, 로깅 자체가 실패해도 본 기능은 정상 동작(fail-open), 관리자 명령 응답 포맷, 관리자가 아니면 명령이 먹히지 않음) 7건 포함 pytest 총 107건 통과. `migrations/0016_ai_usage_log.sql`을 실제 Supabase에 적용 완료. 이어서 `scripts/verify_ai_usage_e2e.py`로 **실제 Gemini 호출 1회 + 실제 Google Cloud TTS 합성 1회**를 수행해 `ai_usage_log`의 오늘 카운트가 각각 정확히 1씩 증가함을 확인하고, 실제 관리자 계정으로 `/AI사용량` 명령을 실행해 "Gemini: 오늘 1회 / 이번달 1회", "Google Cloud TTS: 오늘 1회 / 이번달 1회"가 정확히 표시됨을 확인.
+
+## 기획서 로드맵(M0~M17) 전부 구현 완료
+
+이 시점 기준으로 기획서 섹션17에 명시된 마일스톤 전부(M0~M17)를 구현하고, 가능한 범위에서 실제 텔레그램/Supabase/Gemini/Google Cloud TTS 계정으로 End-to-End 검증까지 마쳤다. 자세한 마일스톤별 내역은 위 각 섹션 참고.
+
+## M18 — 개인 맞춤 난이도 시스템 (로드맵 이후 사용자 추가 요청, 2026-09-08/09)
+
+로드맵(M0~M17)을 다 마친 뒤 사용자가 별도로 요청한 대형 개선: 지금까지 단어/문법/독해/회화가 전부 `placement_level`(beginner/intermediate/advanced) 하나로만 난이도가 정해져 있어 실제 수준과 안 맞는 콘텐츠가 나가는 문제를 해결하기 위해, 영역별로 독립적인 "무엇을 알고 무엇을 어려워하는지" 추적 축을 추가하고 정답률 기반으로 자동 조정되게 했다. 4개 영역 전부 **최소 학습량(10개) 조건 + 정답률 80%/50% 임계값**이라는 동일한 규칙(`app/difficulty.py`의 `next_band()` 공유 함수)을 따르되, 각 영역의 특성에 맞게 구현 방식은 다르다.
+
+### 1. 단어 — frequency_rank 기반 밴드
+- `words.frequency_rank`(정수, Oxford 3000/5000·COCA 빈도 참고해 AI가 추정) 컬럼 추가. `users.word_band`(0~5, 기본 0)로 사용자별 현재 난이도 구간을 추적.
+- 신규 단어 선정 시 `(band 하한, band 상한)` 범위로 먼저 좁혀서 조회하고(`get_new_words`에 `min_rank`/`max_rank` 파라미터 추가), 해당 밴드에 후보가 없으면 기존처럼 밴드 무시 폴백(fail-open) — 정렬은 `coalesce(frequency_rank, 999999) asc`라 랭크 없는 단어는 항상 뒤로 밀린다.
+- **신규 단어(첫 학습) 완료 시에만** `user_word_attempts`(user_id/word_id/band/is_correct)에 기록 — SRS 복습(이미 배운 단어)은 "이 난이도가 지금 적절한가"를 재는 신호가 아니므로 제외. 최근 10개 정오답을 `difficulty.next_band()`에 넣어 밴드를 조정.
+- 기존 콘텐츠뱅크 단어(166개)는 `scripts/backfill_word_frequency_rank.py`로 소급 부여 완료.
+- 문법 학습(M6)/텍스트학습(M11)/수행평가(M12)에서 추출되는 보조 단어(key_vocabulary)는 frequency_rank를 강제하지 않음(별도 `_KEY_VOCAB_REQUIRED_FIELDS`로 분리) — 그 프롬프트들까지 다 바꾸는 범위 확장을 피하기 위함. 그 단어들은 NULL로 남아 정렬 시 뒤로 밀릴 뿐, 다른 기능에는 영향 없음.
+- `words`의 유일성 범위를 `word` 단일 → `(word, learning_mode)`에서 이번엔 그대로 유지(M14에서 이미 처리됨) — frequency_rank 추가는 유일성 제약과 무관.
+
+### 2. 문법 — 고정 커리큘럼 + 주제별 게이팅 + 취약주제 가중 복습
+- `app/grammar/curriculum.py`에 레벨별 고정 순서를 코드로 둠(placement/questions.py, child_beginner/curriculum.py와 동일한 패턴 — DB 테이블+시딩 스크립트보다 단순). `users.grammar_topic_index`로 진행 위치 추적.
+- **신규 세트(`/문법학습`)**: 커리큘럼상 현재 주제의 문제만 출제(`get_questions_for_topic`, 콘텐츠가 없으면 레벨 전체 무작위로 폴백). 그 주제에서 신규 세트 응답만(`is_review=false`) 누적 최근 10개 정답률이 80% 이상이면 다음 주제로 전진(`_maybe_advance_grammar_topic`) — 못 넘으면 그냥 같은 주제를 계속 출제(별도 "강등" 개념 없음, 사용자 스펙 그대로).
+- **복습(`/복습`)**: 정답률 70% 미만인 주제를 `get_topic_accuracy_map`으로 골라, 그 주제에서 최대 70%를 우선 뽑고 나머지는 전체 무작위로 채움(`get_weighted_review_questions`). 취약 주제가 하나도 없으면 기존과 동일하게 완전 무작위.
+- AI가 topic 필드를 프롬프트와 다르게 표현할 수 있어, 생성 후 요청한 커리큘럼 주제 문자열로 강제 덮어써 저장(`generate_grammar_questions_for_topic`) — DB 조회 시 정확히 일치하게 함.
+- `scripts/generate_grammar_curriculum.py`로 18개 주제(레벨당 6~7개) × 주제당 문항을 생성. **실사용 중 실제로 겪은 문제**: Gemini가 10문항짜리 큰 JSON 응답에서 가끔 "Extra data"(트레일링 콘텐츠) 파싱 에러를 냄 — 스크립트에 주제 하나 실패해도 나머지는 계속 진행하도록 try/except 추가, count-per-topic을 10→6으로 줄이고 2~3회 재시도해 전체 18개 주제 모두 최소 6문항 이상 확보(대부분 10문항 이상).
+
+### 3. 독해 — 지문 난이도 메타데이터 + 밴드 적응
+- `reading_passages`에 `avg_sentence_length`/`vocab_level`/`grammar_complexity`(참고용 메타데이터) + `difficulty_band`(0~5, 실제 선택/조정에 쓰는 단일 축) 추가. `users.reading_band`로 사용자별 현재 밴드 추적.
+- 지문 선택은 `get_random_passage(level, mode, band)`로 먼저 밴드 필터, 없으면 밴드 무시 폴백.
+- **별도 로그 테이블을 새로 만들지 않고 기존 `user_reading_attempts`를 그대로 재사용** — `reading_passages.difficulty_band`와 JOIN해서 "해당 밴드의 최근 첫 시도(attempt_number=1, is_review=false) 정오답"을 계산(`get_recent_band_results`). 힌트를 받은 뒤의 2차 시도는 "이 난이도가 애초에 적절했는가"를 그대로 반영하지 않으므로 밴드 판단에서 제외.
+- 실제 검증: `scripts/verify_personalization_e2e.py`에서 실제 지문 선택 → 2회 시도 → `user_reading_attempts`-`reading_passages` JOIN 결과에 `difficulty_band`가 정확히 붙어 나오는 것을 DB에서 직접 확인.
+
+### 4. 회화 — 독립적 conversation_level(CEFR) + 세션후 피드백 + 응답 난이도 검사
+- `users.conversation_level`(0~5, A1~C2 매핑, 기본 B1) — `placement_level`과 완전히 별개 축.
+- 5턴 완료 후 항상 "쉬웠어요/적당해요/어려웠어요" 인라인 버튼을 보여주고(`convfeedback:easy|ok|hard` 콜백), 응답에 따라 레벨을 ±1 조정(임계값 없이 매 세션 즉시 반영 — 스펙에 최소학습량 조건이 없어 단순하게 구현).
+- 시스템 프롬프트에 CEFR 단계명을 명시하고 "이 수준을 크게 벗어나는 어휘/문법은 꼭 필요한 경우가 아니면 쓰지 말고, 쓸 경우 괄호로 쉬운 뜻을 함께 제공하라"를 지시 — 실제 검증에서 AI가 "displace (= replace)"처럼 정확히 이 패턴을 따르는 것을 확인.
+- **응답 사후 검사**: 사용자 known/unknown 단어 목록과의 문자열 대조(활용형 오판 위험) 대신, 응답에 등장한 단어의 원형 후보(`candidate_forms` — 접미사 -ing/-ed/-ly/-s 등을 떼어봄)를 `words.frequency_rank`와 대조해 레벨별 상한 순위를 명확히 넘는 단어가 2개 이상이면 "더 쉽게 다시 말해줘" 지시를 추가해 **딱 한 번만** 재생성 요청(무한 재시도 없음, AI 호출 최소화 원칙). 재생성 결과는 재검사 없이 그대로 사용.
+- 우리 단어뱅크가 수백 개 규모라 일반 대화 어휘 전체를 커버하지는 못해 재현율에 한계가 있음(정직하게 기록) — 그래도 "정확한 문자열 일치가 아니라 난이도 구간 비교"라는 요청의 핵심 메커니즘은 충족.
+
+### 완료조건 검증
+- `tests/test_word_difficulty.py`(12) — 밴드 산술(최소표본/승급/강등/유지/경계값), 신규단어만 기록, 복습단어 제외, 밴드 폴백 큐 구성.
+- `tests/test_grammar_difficulty.py`(5) — 커리큘럼 주제 매칭, 10문항 누적 후 주제 전진, 낮은 정답률에는 전진 안 함, 복습 가중치, 취약주제 없을 때 폴백.
+- `tests/test_reading_difficulty.py`(5) — 밴드 우선 선택+폴백, 1차 시도만 밴드 신호로 기록, 2차 시도는 중복 미기록, 10회 적절 판정 후 밴드 승급.
+- `tests/test_conversation_difficulty.py`(15) — 토큰화/원형후보/난이도판정 순수함수, 레벨 조정(상한/하한 클램프), 라우터 통합(CEFR 레벨 프롬프트 전달, 너무 어려우면 1회 재생성, 피드백 콜백이 레벨 반영, 5턴 후 피드백 버튼 노출).
+- 총 pytest 145건 통과(기존 107건에서 +38건). `migrations/0017~0020` 전부 실제 Supabase에 적용 완료.
+- `scripts/verify_personalization_e2e.py`로 관리자 계정(하루제한 우회) 통해 4개 영역을 실제 Gemini/DB로 순서대로 실행 — 단어카드(실제 frequency_rank 반영 큐), 문법(커리큘럼 1번 주제 "가정법" 정확히 출제), 해석(밴드4 지문 선택 및 2회 시도 정상 종료), 회화(5턴 완료 + CEFR 반영 응답 + 난이도 피드백 버튼 + 레벨 갱신)까지 크래시 없이 확인.
+
+### 이번 구간에서 정한 기본값
+
+| 항목 | 정한 기본값 | 근거 |
+|---|---|---|
+| 단어 밴드 경계 | (1-1000)/(1001-2000)/(2001-3000)/(3001-5000)/(5001-8000)/(8001+) 6단계 | 사용자 스펙에 정확한 경계 명시 없음. Oxford 3000/5000 규모감에 맞춰 합리적으로 구간을 나눔 |
+| 회화 conversation_level 조정 조건 | 최소학습량 없이 세션마다 즉시 ±1 | 스펙에 회화만 임계값 조건이 명시되지 않았고, 세션 자체가 하루 1회라 매번 되묻는 것이 자연스럽다고 판단 |
+| 회화 난이도 재생성 임계값 | 레벨 상한을 넘는 단어 2개 이상이면 재생성 | 스펙에 정확한 개수 명시 없음. 1개는 오탐 여지가 있어 2개로 여유를 둠 |
+| 문법 커리큘럼 주제 목록 | 레벨당 5~7개, 코드에 고정 데이터로 정의(DB 테이블 아님) | 이 프로젝트의 다른 고정 커리큘럼(레벨진단, CHILD_BEGINNER)과 동일한 패턴. 소수 사용자 규모에서 DB 테이블+시딩은 과설계 |
+| 독해 밴드 판단 신호 | 신규(비복습) 첫 시도(attempt_number=1)만 | 힌트를 받은 뒤의 2차 시도는 "이 난이도가 원래 적절했는가"를 왜곡하므로 제외 |
+| 회화 어휘 난이도 판단 대상 단어 | 우리 words 테이블에 있는 단어만(원형 후보 매칭 포함) | 범용 영어 빈도사전을 별도로 구축하는 것은 범위 밖. 재현율 한계는 있으나 "빈도 구간 비교"라는 요청의 핵심은 충족 |
 
 ## 이번 구간에서 정한 기본값 (섹션 18 `[결정 필요]` 관련, 섹션19-7에 따라 개발 중단 없이 진행)
 
@@ -185,6 +287,24 @@
 | 학교 수행평가(M12) 문법해설+예상문제 생성 방식 | 한 번의 Gemini JSON 호출로 두 가지를 함께 생성 | AI 호출 최소화 원칙(섹션16)에 따라 별도 호출로 나누지 않음 — 세션당 AI 호출 수를 M11(단어추출+피드백 2회)과 동일하게 유지 |
 | 학교 수행평가(M12) 하루 횟수 제한 | 적용하지 않음 | 시험 대비 특성상 여러 지문을 준비 기간 동안 반복 학습할 수 있어야 한다고 판단. M11(텍스트 붙여넣기 학습)과 동일한 근거 |
 | 학교 수행평가(M12)를 오늘의 학습(M7) 자동 체인에 포함할지 | 포함하지 않음 | M11과 동일 — 사용자가 특정 수행평가 지문을 직접 골라 붙여넣는 능동적 기능 |
+| 학교 시험 관리(M13) 자료-시험 연결 시점 | `/수행평가` 시작 시, 예정된 시험이 1개면 자동연결(확인 없음)·2개 이상이면 인라인 키보드로 선택·0개면 묻지 않음 | 섹션7 자동화 원칙 — 선택지가 실질적으로 하나뿐이면 확인질문을 만들지 않고, 진짜 선택이 필요할 때만 질문 |
+| 학교 시험 관리(M13) 시험직전복습 대상 | 연결된 자료들의 예상문제 중 **오답이었던 문항만** 재출제 | "복습"의 목적상 이미 맞힌 문제를 반복하는 것보다 취약점 위주가 효율적이라고 판단(M7 Planner의 취약주제 우선 원칙과 동일한 방향) |
+| 학교 시험 관리(M13) 시험직전복습 결과의 원본 반영 여부 | 원본 `question_details.is_correct`는 수정하지 않고, `school_exam_reviews`에 별도 로그만 남김 | 오답노트(원본 학습 기록)의 무결성을 유지하기 위함 — 복습 중 다시 틀렸다고 원본 학습 시점 기록을 덮어쓰지 않음 |
+| 학교 시험 관리(M13) 시험직전복습/자료연결 하루 제한 | 적용하지 않음 | 시험일이 가까워질수록 반복 복습이 자연스러운 사용 패턴이라고 판단 |
+| CHILD_BRIDGE(M14) 모드의 차별점 범위 | 톤/난이도만 다르게, 메뉴·기능 구조는 GENERAL과 완전 동일 | 기획서에 명시 없어 사용자에게 직접 확인 후 결정. 별도 메뉴/커리큘럼이 필요한 CHILD_BEGINNER(M15, 사용자가 명시적으로 요청)와는 다른 접근 |
+| CHILD_BRIDGE(M14) 콘텐츠뱅크 격리 방식 | `words`/`grammar_questions`/`reading_passages`에 `learning_mode` 컬럼 추가, `words`는 `(word, learning_mode)` 복합 유일성으로 변경 | 같은 레벨이라도 GENERAL(성인용)과 CHILD_BRIDGE(11세용) 콘텐츠의 실제 내용이 달라야 해서, 단순 톤 변경이 아니라 별도 콘텐츠뱅크가 필요하다고 판단. 기존 GENERAL 데이터는 컬럼 기본값(`GENERAL`)으로 하위호환 유지 |
+| CHILD_BRIDGE(M14) 톤 지침 적용 범위 | 사전생성 콘텐츠뱅크 + 세션 중 실시간 생성되는 모든 AI 응답(회화/해석힌트/텍스트추출/피드백/Planner 메시지)에 공통 지침 재사용 | 한 곳(`tone_note()`)에서 관리해 일관성 유지, 기능별로 다른 톤 기준을 따로 정의하지 않음 |
+| CHILD_BRIDGE(M14) 레벨진단(M3)/오늘의 학습 문항 저작소 | 변경하지 않음(레벨진단은 원래 고정된 소규모 문항, 학교시험관리 M13은 이번 범위에서 논외) | 사용자 확인 답변이 단어/문법/해석/회화 중심이었고, 레벨진단은 로직 검증용 고정 문항이라 톤 조정 대상에서 자연스럽게 제외 |
+| CHILD_BEGINNER(M15) 구현 범위 | Stage0~5만, Stage6(듣기말하기)은 제외 | Stage6은 TTS(M16)가 있어야 자연스러운데 M16이 아직 없어 순서상 나중으로 미룸. 사용자에게 직접 확인 후 결정 |
+| CHILD_BEGINNER(M15) Stage0/1 콘텐츠 생성 방식 | AI 생성 없이 코드에 고정(정적) 데이터로 구현 | 알파벳 26개/파닉스 단어가족은 개수가 한정되어 있고 매번 달라질 필요가 없음(레벨진단 M3과 동일한 설계 판단). AI 호출 최소화 원칙(섹션16)과도 일치 |
+| CHILD_BEGINNER(M15) Stage2~5 콘텐츠 상호작용 방식 | 카드+주관식 없이 곧바로 4지선다 객관식만 | 아주 어린 학습자에게는 자유 타이핑(주관식)보다 버튼 선택이 훨씬 쉬움. 단어학습(M5)의 카드→객관식→주관식 3단계보다 단순화 |
+| CHILD_BEGINNER(M15) 진행 방식 | 세션 하나당 한 Stage만 진행, 완료 시 자동으로 다음 Stage 자동체이닝 하지 않고 "오늘은 여기까지" 종료 | 오늘의 학습(M7)의 자동 체이닝과 달리, 어린이의 짧은 집중 시간을 고려해 한 번에 여러 단계를 몰아 진행하지 않도록 설계 |
+| CHILD_BEGINNER(M15) 진도 표현 방식 | `users.child_stage`(현재 단계, 정수) + `child_beginner_progress`(단계별 최초 완료 로그) | 레벨(placement_level) 개념이 없는 모드라 별도 진행 단계 컬럼을 신설. 완료 로그는 진도 화면(✅/👉/⬜ 표시)에 사용 |
+| CHILD_BEGINNER(M15) Stage6 콘텐츠 출처 | 새로 생성하지 않고 Stage2(기초단어) 콘텐츠뱅크를 듣기 문제로 재사용 | 이미 검증된 쉬운 단어 세트를 "듣기" 방식으로 다시 연습하는 것이 새 콘텐츠 저작보다 합리적. AI 호출/새 테이블 불필요 |
+| CHILD_BEGINNER(M15) Stage6 말하기 채점 방식 | 발음 인식(STT) 없이, 음성메시지를 녹음해서 보내면 그 자체로 완료 처리 | STT는 별도의 새 외부 서비스/API 키가 또 필요한 사안이라 범위 밖으로 판단. "녹음해서 소리내어 말해보는 행위" 자체가 어린이 발음연습의 목적을 이미 충족한다고 봄 |
+| AI 사용량 모니터링(M17) 집계 단위 | 사용자별이 아니라 프로젝트(API 키) 전체 | Gemini/Google Cloud TTS 무료 티어 한도가 API 키 단위로 걸리기 때문(M9 실측 사례와 동일 전제). 사용자별 집계는 현재 필요성이 낮다고 판단 |
+| AI 사용량 모니터링(M17) 계측 위치 | 각 기능(회화/해석/문법생성 등)이 아니라 `gemini_client`/`tts_client` 공용 클라이언트 레벨 | 호출부마다 로깅을 추가하면 새 기능 추가 시 빠뜨릴 위험이 있음. 클라이언트 레벨 계측은 모든 현재/미래 AI 호출을 자동으로 포함 |
+| AI 사용량 모니터링(M17)과 기존 `learning_sessions.ai_call_count`의 관계 | 둘 다 유지, 용도 분리 | 기존 컬럼은 "오늘의 학습 세션 내" 호출수라는 좁은 의미로 이미 쓰이고 있어 그대로 두고, `ai_usage_log`를 프로젝트 전체 집계용으로 새로 추가 |
 
 ## 실제 계정 연동 후 End-to-End 검증 (2026-09-07)
 
@@ -199,6 +319,44 @@
 
 1. **psycopg 비동기 모드 vs Windows ProactorEventLoop**: Windows의 기본 이벤트루프는 psycopg 비동기 모드를 지원하지 않음. `app/main.py` 안에서 정책을 바꾸는 시도는 uvicorn이 이미 루프를 만든 뒤라 효과가 없어서, 이벤트루프 생성 전에 정책을 바꾸는 별도 실행 스크립트 [run_local.py](run_local.py)를 추가함. **배포 환경(Linux/Railway)에는 이 이슈 자체가 없음.**
 2. **로컬에서 실제 텔레그램 대화 테스트**: ngrok 미설치 상태라 webhook 대신 [scripts/poll_dev.py](scripts/poll_dev.py)(getUpdates long polling)로 대체 검증. 실제 배포 시에는 여전히 webhook(`app/main.py`)을 사용.
+
+## M19 — 회화 사전 단어학습 (오늘의 주제 선정 + 핵심 단어 먼저 학습, 사용자 추가 요청, 2026-09-09)
+
+`/회화` 시작 시 곧바로 AI와 대화하던 기존 방식을, "오늘의 대화 주제 선정 → 그 주제 핵심 단어 카드학습
+→ 회화 시작" 순서로 개선했다.
+
+- **주제 선정**: `app/conversation/topics.py`에 고정 주제 목록(자기소개/일상생활/취미와 관심사/여행/음식과
+  식당/학교생활/쇼핑/날씨와 계절/직장생활/미래 계획)을 두고, `users.conversation_topic_index`(신규 컬럼)로
+  세션마다 순환시킨다. `users.target_use_case`(자유 입력 텍스트)가 특정 주제 키워드와 겹치면 그 주제를
+  순서 맨 앞으로 당겨 관심사를 우선 반영 — AI 호출 없는 규칙기반 선정이라 비용이 들지 않는다.
+- **주제 단어 콘텐츠뱅크**: 신규 테이블 `conversation_topic_words`(topic/level/learning_mode/word_id)가
+  `words`와 별도로 주제-단어 연결만 담당한다(문법 key_vocabulary처럼 단어 자체는 `words`에 합류시켜 일반
+  단어학습 풀도 함께 풍부해짐). 주제당 5~8개를 콘텐츠뱅크에서 먼저 조회하고, 부족하면(`< 5`)
+  `app/content/generator.py`의 `generate_topic_words()`로 최초 1회 생성 후 캐싱 — 이후 같은
+  레벨/모드 사용자는 재생성 없이 재사용한다. `scripts/generate_conversation_topic_words.py`로 실사용 전에
+  전체 (레벨×주제) 조합을 미리 채워둘 수 있다(선택사항 — 없어도 라우터가 최초 요청 시 자동 생성).
+- **단어카드 재사용**: 주제 단어는 기존 단어학습 카드 플로우(`vocab_service`, `vocab:known/unknown/mcq`
+  콜백)를 그대로 통과한다 — SRS(`user_words`)에도 정상 반영되어, 회화 사전학습이 곧 일반 단어학습 성과로도
+  이어진다. 카드 완료는 `app/conversation/service.py`의 `ConversationPreview` 대기 상태로 감지해
+  `app/handlers/router.py`의 `_finish_vocab_word`가 실제 회화 시작(`_begin_conversation`)으로 이어준다.
+- **프롬프트 반영**: `app/conversation/chat.py`의 회화 시스템 프롬프트에 "오늘 대화 주제는 '{topic}'이다"와
+  "학습자가 오늘 학습한 이 단어들({단어목록})을 대화에서 우선적으로 활용할 것" 지시를 추가(오프닝/매 턴 응답
+  모두). 기존 사후 난이도 체크(M18 — 사용자 레벨보다 어려운 단어가 일정 개수 이상이면 재생성 요청)는 그대로
+  유지해 두 장치가 서로 보완하도록 함(대화가 주제 밖으로 흐르는 경우까지는 사전학습만으로 못 막기 때문).
+- **세션 기록**: `conversation_sessions`에 `topic text`, `preview_word_ids bigint[]` 컬럼을 추가해 어떤
+  주제/단어로 회화했는지 남긴다.
+- **완료조건 검증**: `tests/test_conversation_flow.py`(주제 단어카드 선행 후 회화 시작·5턴 완료·AI 실패
+  대응·콘텐츠뱅크 부족 시 생성), `tests/test_conversation_topics.py`(순환/개인화 선정 규칙),
+  `tests/test_content_generator.py`(`generate_topic_words` 파싱/필터링) + 기존
+  `tests/test_conversation_difficulty.py`/`tests/test_child_bridge_mode.py`도 새 사전학습 단계를 거치도록
+  갱신. `scripts/simulate_conversation.py`/`scripts/verify_personalization_e2e.py`도 카드 클릭 단계를
+  추가해 실제 Gemini/DB로도 전체 플로우가 이어지는지 확인 가능하도록 갱신함.
+
+| 결정 필요 항목 | 결정 | 이유 |
+|---|---|---|
+| 주제 선정 방식 | AI 호출 없는 규칙기반(고정 목록 순환 + target_use_case 키워드 매칭) | 매 회화 세션마다 주제 선정에 AI를 또 호출하면 M9에서 실측한 Gemini 무료 티어 하루 20회 한도를 더 빨리 소진함 |
+| 주제 단어 저장 위치 | `words` 테이블에 그대로 합류 + 별도 연결 테이블(`conversation_topic_words`)로 주제만 태깅 | `words`에 topic 컬럼을 직접 추가하면 기존 (word, learning_mode) 유일성 제약과 충돌 여지가 있고, 문법 key_vocabulary 합류 방식과 일관성을 유지하기 위함 |
+| 주제 단어 카드가 SRS(user_words)에 반영되는지 여부 | 반영됨(일반 단어학습과 동일 콜백 재사용) | 텍스트학습(M11)/수행평가(M12)도 추출 단어를 동일하게 SRS에 반영하는 기존 선례를 따름 |
 
 ## 알려진 제약
 

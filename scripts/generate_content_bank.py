@@ -20,24 +20,26 @@ from app.repo import content as content_repo  # noqa: E402
 LEVELS = ["beginner", "intermediate", "advanced"]
 
 
-async def main(words_per_level: int, grammar_per_level: int, reading_per_level: int) -> None:
+async def main(words_per_level: int, grammar_per_level: int, reading_per_level: int, learning_mode: str) -> None:
     await init_db_pool()
     try:
         for level in LEVELS:
-            words = await generate_words(level, words_per_level)
-            inserted = await content_repo.insert_words(level, words)
-            print(f"[words:{level}] generated={len(words)} inserted={inserted}")
+            words = await generate_words(level, words_per_level, learning_mode=learning_mode)
+            inserted = await content_repo.insert_words(level, words, learning_mode=learning_mode)
+            print(f"[words:{level}:{learning_mode}] generated={len(words)} inserted={inserted}")
 
-            questions = await generate_grammar_questions(level, grammar_per_level)
-            inserted_q = await content_repo.insert_grammar_questions(level, questions)
-            print(f"[grammar:{level}] generated={len(questions)} inserted={inserted_q}")
+            questions = await generate_grammar_questions(level, grammar_per_level, learning_mode=learning_mode)
+            inserted_q = await content_repo.insert_grammar_questions(level, questions, learning_mode=learning_mode)
+            print(f"[grammar:{level}:{learning_mode}] generated={len(questions)} inserted={inserted_q}")
 
-            inserted_vocab = await content_repo.insert_key_vocabulary_from_grammar(level, questions)
-            print(f"[grammar-vocab:{level}] inserted={inserted_vocab}")
+            inserted_vocab = await content_repo.insert_key_vocabulary_from_grammar(
+                level, questions, learning_mode=learning_mode
+            )
+            print(f"[grammar-vocab:{level}:{learning_mode}] inserted={inserted_vocab}")
 
-            passages = await generate_reading_passages(level, reading_per_level)
-            inserted_r = await content_repo.insert_reading_passages(level, passages)
-            print(f"[reading:{level}] generated={len(passages)} inserted={inserted_r}")
+            passages = await generate_reading_passages(level, reading_per_level, learning_mode=learning_mode)
+            inserted_r = await content_repo.insert_reading_passages(level, passages, learning_mode=learning_mode)
+            print(f"[reading:{level}:{learning_mode}] generated={len(passages)} inserted={inserted_r}")
 
         print("word totals:", await content_repo.count_words_by_level())
         print("grammar totals:", await content_repo.count_grammar_questions_by_level())
@@ -51,5 +53,6 @@ if __name__ == "__main__":
     parser.add_argument("--words-per-level", type=int, default=15)
     parser.add_argument("--grammar-per-level", type=int, default=10)
     parser.add_argument("--reading-per-level", type=int, default=5)
+    parser.add_argument("--mode", choices=["GENERAL", "CHILD_BRIDGE"], default="GENERAL")
     args = parser.parse_args()
-    asyncio.run(main(args.words_per_level, args.grammar_per_level, args.reading_per_level))
+    asyncio.run(main(args.words_per_level, args.grammar_per_level, args.reading_per_level, args.mode))

@@ -22,39 +22,89 @@ async def get_due_review_words(user_id: int, today: date) -> list[dict[str, Any]
             return await cur.fetchall()
 
 
-async def get_new_words(user_id: int, level: str, limit: int) -> list[dict[str, Any]]:
+async def get_new_words(
+    user_id: int,
+    level: str,
+    limit: int,
+    learning_mode: str = "GENERAL",
+    min_rank: int | None = None,
+    max_rank: int | None = None,
+) -> list[dict[str, Any]]:
+    """min_rank/max_rank를 주면 개인 맞춤 난이도 밴드(frequency_rank) 범위로 후보를 좁힌다.
+
+    frequency_rank가 없는(NULL) 단어는 밴드 필터에 걸리지 않지만, 정렬 시 항상 맨 뒤로
+    밀려 자주 쓰이는 단어가 우선 노출되게 한다(둘 다 없을 때는 기존과 동일하게 id 순).
+    """
+    pool = get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            conditions = ["w.level = %s", "w.learning_mode = %s"]
+            params: list[Any] = [level, learning_mode]
+            if min_rank is not None and max_rank is not None:
+                conditions.append("w.frequency_rank between %s and %s")
+                params.extend([min_rank, max_rank])
+
+            where_clause = " and ".join(conditions)
+            await cur.execute(
+                f"""
+                select w.id as word_id, w.word, w.meaning_ko, w.pronunciation,
+                       w.example_sentence, w.example_translation, w.level, w.frequency_rank
+                from words w
+                where {where_clause}
+                  and not exists (
+                      select 1 from user_words uw where uw.user_id = %s and uw.word_id = w.id
+                  )
+                order by coalesce(w.frequency_rank, 999999) asc, w.id asc
+                limit %s
+                """,
+                (*params, user_id, limit),
+            )
+            return await cur.fetchall()
+
+
+async def record_word_attempt(user_id: int, word_id: int, band: int, is_correct: bool) -> None:
+    """신규 단어(첫 학습)를 완료했을 때만 기록 — SRS 복습은 대상이 아니다."""
+    pool = get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "insert into user_word_attempts (user_id, word_id, band, is_correct) values (%s, %s, %s, %s)",
+                (user_id, word_id, band, is_correct),
+            )
+
+
+async def get_recent_band_results(user_id: int, band: int, limit: int) -> list[bool]:
+    """최신순으로 정렬된 최근 N개 정오답 — 밴드 승급/강등 판단용."""
     pool = get_pool()
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                select w.id as word_id, w.word, w.meaning_ko, w.pronunciation,
-                       w.example_sentence, w.example_translation, w.level
-                from words w
-                where w.level = %s
-                  and not exists (
-                      select 1 from user_words uw where uw.user_id = %s and uw.word_id = w.id
-                  )
-                order by w.id
+                select is_correct from user_word_attempts
+                where user_id = %s and band = %s
+                order by attempted_at desc
                 limit %s
                 """,
-                (level, user_id, limit),
+                (user_id, band, limit),
             )
-            return await cur.fetchall()
+            rows = await cur.fetchall()
+            return [row["is_correct"] for row in rows]
 
 
-async def get_distractor_meanings(level: str, exclude_word_id: int, count: int) -> list[str]:
+async def get_distractor_meanings(
+    level: str, exclude_word_id: int, count: int, learning_mode: str = "GENERAL"
+) -> list[str]:
     pool = get_pool()
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
                 select meaning_ko from words
-                where level = %s and id != %s
+                where level = %s and learning_mode = %s and id != %s
                 order by random()
                 limit %s
                 """,
-                (level, exclude_word_id, count),
+                (level, learning_mode, exclude_word_id, count),
             )
             rows = await cur.fetchall()
             return [r["meaning_ko"] for r in rows]

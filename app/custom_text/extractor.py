@@ -1,13 +1,13 @@
 import json
 
 from app.ai.gemini_client import generate_json
-from app.content.generator import LEVEL_DESCRIPTIONS, _valid_key_vocabulary
+from app.content.generator import LEVEL_DESCRIPTIONS, _valid_key_vocabulary, tone_note
 
 _PROMPT_TEMPLATE = """너는 영어 학습 콘텐츠 제작자다. 아래는 학습자가 직접 붙여넣은 영어 텍스트다.
 학습자 레벨: {level} ({level_desc})
 이 텍스트에서 학습자가 몰라서 이해를 방해할 만한 핵심 단어를 최대 {max_words}개 뽑아라
 ({level} 난이도 기준으로 너무 쉬운 단어는 제외).
-
+{tone_note}
 텍스트:
 {text}
 
@@ -24,9 +24,13 @@ _PROMPT_TEMPLATE = """너는 영어 학습 콘텐츠 제작자다. 아래는 학
 ]"""
 
 
-async def extract_key_vocabulary(text: str, level: str, max_words: int = 8) -> list[dict]:
+async def extract_key_vocabulary(text: str, level: str, max_words: int = 8, learning_mode: str = "GENERAL") -> list[dict]:
     prompt = _PROMPT_TEMPLATE.format(
-        level=level, level_desc=LEVEL_DESCRIPTIONS.get(level, ""), text=text, max_words=max_words
+        level=level,
+        level_desc=LEVEL_DESCRIPTIONS.get(level, ""),
+        text=text,
+        max_words=max_words,
+        tone_note=tone_note(learning_mode),
     )
     raw = await generate_json(prompt)
     items = json.loads(raw)

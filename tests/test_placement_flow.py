@@ -12,7 +12,7 @@ def _wire(monkeypatch):
 
     sent: list[tuple] = []
 
-    async def fake_send(chat_id, text, reply_markup=None):
+    async def fake_send(chat_id, text, reply_markup=None, parse_mode=None):
         sent.append((chat_id, text))
 
     async def fake_answer_cb(callback_query_id, text=None):

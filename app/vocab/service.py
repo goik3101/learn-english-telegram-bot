@@ -13,6 +13,7 @@ class WordItem:
     ease: float
     interval_days: int
     is_new: bool
+    learning_mode: str = "GENERAL"
 
 
 @dataclass

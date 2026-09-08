@@ -8,11 +8,11 @@ class FakeContentRepo:
         self.inserted_words: list[tuple] = []
         self._next_id = 500
 
-    async def insert_words(self, level, words):
+    async def insert_words(self, level, words, learning_mode="GENERAL"):
         self.inserted_words.append((level, words))
         return len(words)
 
-    async def get_word_ids(self, words):
+    async def get_word_ids(self, words, learning_mode="GENERAL"):
         ids = {}
         for w in words:
             ids[w] = self._next_id
@@ -42,7 +42,7 @@ def _wire(monkeypatch):
 
     sent: list[tuple] = []
 
-    async def fake_send(chat_id, text, reply_markup=None):
+    async def fake_send(chat_id, text, reply_markup=None, parse_mode=None):
         sent.append((chat_id, text))
 
     async def fake_answer_cb(callback_query_id, text=None):
@@ -76,7 +76,7 @@ def test_custom_text_full_flow_with_extracted_word(monkeypatch):
     telegram_id = "1301"
     _setup_general_user(fake_users, telegram_id)
 
-    async def fake_extract(text, level, max_words):
+    async def fake_extract(text, level, max_words, learning_mode="GENERAL"):
         assert text == SAMPLE_TEXT
         return [
             {
@@ -89,7 +89,7 @@ def test_custom_text_full_flow_with_extracted_word(monkeypatch):
             }
         ]
 
-    async def fake_feedback(text, translation):
+    async def fake_feedback(text, translation, learning_mode="GENERAL"):
         return "핵심을 잘 짚으셨어요!"
 
     monkeypatch.setattr(router.custom_text_extractor, "extract_key_vocabulary", fake_extract)
@@ -124,10 +124,10 @@ def test_custom_text_skips_cards_when_no_words_extracted(monkeypatch):
     telegram_id = "1302"
     _setup_general_user(fake_users, telegram_id)
 
-    async def fake_extract(text, level, max_words):
+    async def fake_extract(text, level, max_words, learning_mode="GENERAL"):
         return []
 
-    async def fake_feedback(text, translation):
+    async def fake_feedback(text, translation, learning_mode="GENERAL"):
         return "좋아요!"
 
     monkeypatch.setattr(router.custom_text_extractor, "extract_key_vocabulary", fake_extract)

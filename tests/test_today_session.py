@@ -59,7 +59,7 @@ def _wire(
 
     sent: list[tuple] = []
 
-    async def fake_send(chat_id, text, reply_markup=None):
+    async def fake_send(chat_id, text, reply_markup=None, parse_mode=None):
         sent.append((chat_id, text))
 
     async def fake_answer_cb(callback_query_id, text=None):
@@ -92,7 +92,7 @@ def test_today_session_shows_ai_focus_message_when_weak_topics_exist(monkeypatch
     telegram_id = "904"
     _setup_general_user(fake_users, telegram_id)
 
-    async def fake_build_focus_message(level, weak_topics, accuracy):
+    async def fake_build_focus_message(level, weak_topics, accuracy, learning_mode="GENERAL"):
         assert weak_topics == ["가정법"]
         assert accuracy == 0.4
         return "최근 가정법에서 자주 틀리고 있어요!"
@@ -157,7 +157,7 @@ def test_today_session_chains_through_reading_stage_when_passage_available(monke
     telegram_id = "906"
     _setup_general_user(fake_users, telegram_id)
 
-    async def fake_evaluate(passage_text, translation):
+    async def fake_evaluate(passage_text, translation, learning_mode="GENERAL"):
         return True, "정확해요!"
 
     monkeypatch.setattr(router.reading_evaluator, "evaluate", fake_evaluate)

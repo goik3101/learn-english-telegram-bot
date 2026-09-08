@@ -55,7 +55,7 @@ def _wire(monkeypatch, **kwargs):
 
     sent: list[tuple] = []
 
-    async def fake_send(chat_id, text, reply_markup=None):
+    async def fake_send(chat_id, text, reply_markup=None, parse_mode=None):
         sent.append((chat_id, text))
 
     monkeypatch.setattr(router, "send_message", fake_send)

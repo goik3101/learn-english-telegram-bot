@@ -10,14 +10,16 @@ class FakeUserWordsRepo:
         self.learned_rows = learned_rows or []
         self.progress_calls: list[tuple] = []
         self.distractor_pool = ["뜻A", "뜻B", "뜻C"]
+        self.word_attempts: list[tuple] = []
+        self.band_results: dict[int, list[bool]] = {}
 
     async def get_due_review_words(self, user_id, today):
         return self.due_rows
 
-    async def get_new_words(self, user_id, level, limit):
+    async def get_new_words(self, user_id, level, limit, learning_mode="GENERAL", min_rank=None, max_rank=None):
         return self.new_rows[:limit]
 
-    async def get_distractor_meanings(self, level, exclude_word_id, count):
+    async def get_distractor_meanings(self, level, exclude_word_id, count, learning_mode="GENERAL"):
         return self.distractor_pool[:count]
 
     async def upsert_word_progress(self, user_id, word_id, status, ease, interval_days, next_review_date):
@@ -25,6 +27,13 @@ class FakeUserWordsRepo:
 
     async def get_learned_words_sample(self, user_id, limit):
         return self.learned_rows[:limit]
+
+    async def record_word_attempt(self, user_id, word_id, band, is_correct):
+        self.word_attempts.append((user_id, word_id, band, is_correct))
+        self.band_results.setdefault(band, []).insert(0, is_correct)
+
+    async def get_recent_band_results(self, user_id, band, limit):
+        return self.band_results.get(band, [])[:limit]
 
 
 def _word_row(word_id, word, meaning_ko):
@@ -48,8 +57,8 @@ def _wire(monkeypatch, due_rows=None, new_rows=None, learned_rows=None):
 
     sent: list[tuple] = []
 
-    async def fake_send(chat_id, text, reply_markup=None):
-        sent.append((chat_id, text))
+    async def fake_send(chat_id, text, reply_markup=None, parse_mode=None):
+        sent.append((chat_id, text, parse_mode))
 
     async def fake_answer_cb(callback_query_id, text=None):
         pass
@@ -145,6 +154,29 @@ def test_vocab_session_subjective_incorrect_resets_interval_and_lowers_ease(monk
     assert (word_id, status) == (20, "learning")
     assert ease == 1.5  # 1.7 - 0.2
     assert interval_days == 1  # 오답이므로 리셋
+
+
+def test_vocab_mcq_wrong_answer_hides_reveal_behind_spoiler(monkeypatch):
+    new_rows = [_word_row(21, "apple", "사과")]
+    fake_users, fake_user_words, sent = _wire(monkeypatch, new_rows=new_rows)
+    telegram_id = "605"
+    _setup_general_user(fake_users, telegram_id)
+
+    run(router.handle_update({"message": {"chat": {"id": 605}, "text": "/단어학습"}}))
+    run(router.handle_update(_callback_update(605, "vocab:unknown:21")))
+    choices, correct_index = vocab_service.get_mcq(telegram_id)
+    wrong_index = (correct_index + 1) % len(choices)
+
+    sent.clear()
+    run(router.handle_update(_callback_update(605, f"vocab:mcq:21:{wrong_index}")))
+
+    chat_id, text, parse_mode = sent[-1]
+    assert parse_mode == "HTML"
+    assert 'class="tg-spoiler"' in text
+    # 스포일러 태그 밖의 일반 텍스트에는 정답(뜻)이 그대로 노출되면 안 된다.
+    plain_text = text.split('<span class="tg-spoiler">')[0]
+    assert choices[correct_index] not in plain_text
+    assert "직접 입력해보세요" in text
 
 
 def test_vocab_quiz_flow(monkeypatch):

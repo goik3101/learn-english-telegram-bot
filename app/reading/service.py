@@ -9,6 +9,7 @@ class Passage:
     text: str
     model_translation: str
     level: str
+    difficulty_band: int | None = None
 
 
 @dataclass

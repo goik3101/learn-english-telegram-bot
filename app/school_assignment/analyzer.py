@@ -2,13 +2,13 @@ import json
 from typing import Any
 
 from app.ai.gemini_client import generate_json
-from app.content.generator import LEVEL_DESCRIPTIONS
+from app.content.generator import LEVEL_DESCRIPTIONS, tone_note
 
 _QUESTION_REQUIRED_FIELDS = {"question", "choices", "correct_index", "explanation"}
 
 _PROMPT_TEMPLATE = """너는 학교 수행평가/시험 대비를 돕는 영어 교사다. 아래는 학생이 학교 수행평가 과제로 받은 영어 지문이다.
 학습자 레벨: {level} ({level_desc})
-
+{tone_note}
 지문:
 {text}
 
@@ -38,9 +38,13 @@ def _is_valid_question(item: Any) -> bool:
     return isinstance(choices, list) and len(choices) == 4 and isinstance(correct_index, int) and 0 <= correct_index < 4
 
 
-async def analyze(text: str, level: str, question_count: int = 3) -> dict:
+async def analyze(text: str, level: str, question_count: int = 3, learning_mode: str = "GENERAL") -> dict:
     prompt = _PROMPT_TEMPLATE.format(
-        level=level, level_desc=LEVEL_DESCRIPTIONS.get(level, ""), text=text, count=question_count
+        level=level,
+        level_desc=LEVEL_DESCRIPTIONS.get(level, ""),
+        text=text,
+        count=question_count,
+        tone_note=tone_note(learning_mode),
     )
     raw = await generate_json(prompt)
     data = json.loads(raw)

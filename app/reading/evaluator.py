@@ -1,11 +1,12 @@
 import json
 
 from app.ai.gemini_client import generate_json
+from app.content.generator import tone_note
 
 _PROMPT_TEMPLATE = """너는 영어 학습 코치다. 학습자가 아래 영어 지문을 한국어로 직접 해석했다.
 학습자의 해석이 지문의 핵심 의미를 정확하게 담고 있는지 평가하라.
 **정답(모범 번역)은 절대 직접 알려주지 마라** — 부족하다면 어느 부분을 다시 봐야 하는지 힌트만 줘라.
-
+{tone_note}
 지문: {passage}
 학습자의 해석: {translation}
 
@@ -16,8 +17,8 @@ _PROMPT_TEMPLATE = """너는 영어 학습 코치다. 학습자가 아래 영어
 }}"""
 
 
-async def evaluate(passage_text: str, user_translation: str) -> tuple[bool, str]:
-    prompt = _PROMPT_TEMPLATE.format(passage=passage_text, translation=user_translation)
+async def evaluate(passage_text: str, user_translation: str, learning_mode: str = "GENERAL") -> tuple[bool, str]:
+    prompt = _PROMPT_TEMPLATE.format(passage=passage_text, translation=user_translation, tone_note=tone_note(learning_mode))
     raw = await generate_json(prompt)
     data = json.loads(raw)
     is_adequate = bool(data.get("is_adequate"))

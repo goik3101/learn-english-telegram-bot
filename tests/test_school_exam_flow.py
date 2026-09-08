@@ -6,10 +6,10 @@ from tests.test_vocab_flow import FakeUserWordsRepo, _setup_general_user
 
 
 class FakeContentRepo:
-    async def insert_words(self, level, words):
+    async def insert_words(self, level, words, learning_mode="GENERAL"):
         return len(words)
 
-    async def get_word_ids(self, words):
+    async def get_word_ids(self, words, learning_mode="GENERAL"):
         return {}
 
 
@@ -100,7 +100,7 @@ def _wire(monkeypatch, wrong_questions=None):
 
     sent: list[tuple] = []
 
-    async def fake_send(chat_id, text, reply_markup=None):
+    async def fake_send(chat_id, text, reply_markup=None, parse_mode=None):
         sent.append((chat_id, text, reply_markup))
 
     async def fake_answer_cb(callback_query_id, text=None):
@@ -200,10 +200,10 @@ def test_school_assignment_auto_links_single_upcoming_exam(monkeypatch):
     _setup_general_user(fake_users, telegram_id)
     exam_id = fake_school_exams.seed("영어", date.today() + timedelta(days=5))
 
-    async def fake_extract(text, level, max_words):
+    async def fake_extract(text, level, max_words, learning_mode="GENERAL"):
         return []
 
-    async def fake_analyze(text, level, question_count):
+    async def fake_analyze(text, level, question_count, learning_mode="GENERAL"):
         return ANALYSIS
 
     monkeypatch.setattr(router.custom_text_extractor, "extract_key_vocabulary", fake_extract)

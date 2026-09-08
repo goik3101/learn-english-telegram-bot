@@ -7,8 +7,11 @@ class FakeReadingRepo:
     def __init__(self, passage_row=None):
         self.passage_row = passage_row
         self.recorded: list[tuple] = []
+        self.mode_calls: list[str] = []
+        self.band_results: dict[int, list[bool]] = {}
 
-    async def get_random_passage(self, level):
+    async def get_random_passage(self, level, learning_mode="GENERAL", band=None):
+        self.mode_calls.append(learning_mode)
         return self.passage_row
 
     async def record_attempt(
@@ -17,6 +20,9 @@ class FakeReadingRepo:
         self.recorded.append(
             (user_id, passage_id, user_translation, ai_feedback, attempt_number, is_adequate, is_review)
         )
+
+    async def get_recent_band_results(self, user_id, band, limit):
+        return self.band_results.get(band, [])[:limit]
 
 
 def _passage_row(pid=1, text="The cat sat on the mat.", translation="고양이가 매트 위에 앉았다.", level="beginner"):
@@ -32,7 +38,7 @@ def _wire(monkeypatch, passage_row=None):
 
     sent: list[tuple] = []
 
-    async def fake_send(chat_id, text, reply_markup=None):
+    async def fake_send(chat_id, text, reply_markup=None, parse_mode=None):
         sent.append((chat_id, text))
 
     monkeypatch.setattr(router, "send_message", fake_send)
@@ -44,7 +50,7 @@ def test_reading_session_finishes_immediately_when_adequate(monkeypatch):
     telegram_id = "1001"
     _setup_general_user(fake_users, telegram_id)
 
-    async def fake_evaluate(passage_text, translation):
+    async def fake_evaluate(passage_text, translation, learning_mode="GENERAL"):
         return True, "잘했어요!"
 
     monkeypatch.setattr(router.reading_evaluator, "evaluate", fake_evaluate)
@@ -67,7 +73,7 @@ def test_reading_gives_hint_then_reveals_on_second_attempt_without_leaking_answe
 
     calls: list[str] = []
 
-    async def fake_evaluate(passage_text, translation):
+    async def fake_evaluate(passage_text, translation, learning_mode="GENERAL"):
         calls.append(translation)
         if len(calls) == 1:
             return False, "주어를 다시 확인해보세요."

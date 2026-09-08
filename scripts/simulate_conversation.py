@@ -47,11 +47,46 @@ router.answer_callback_query = fake_answer_cb
 router.delete_message = fake_delete
 
 
+def _known_word_id(reply_markup: dict | None) -> int | None:
+    """회화 사전 단어학습 카드의 [아는단어] 버튼에서 word_id를 뽑는다(없으면 카드가 아님)."""
+    if not reply_markup:
+        return None
+    for row in reply_markup.get("inline_keyboard", []):
+        for button in row:
+            data = button.get("callback_data", "")
+            if data.startswith("vocab:known:"):
+                return int(data.split(":")[2])
+    return None
+
+
+async def _complete_topic_word_preview() -> None:
+    """오늘의 주제 단어카드가 뜨는 동안 전부 [아는단어]로 눌러 넘겨 회화 시작까지 진행한다."""
+    while True:
+        word_id = _known_word_id(captured[-1]["reply_markup"] if captured else None)
+        if word_id is None:
+            return
+        captured.clear()
+        await router.handle_update(
+            {
+                "callback_query": {
+                    "id": "sim-cb",
+                    "from": {"id": CHAT_ID},
+                    "message": {"chat": {"id": CHAT_ID}},
+                    "data": f"vocab:known:{word_id}",
+                }
+            }
+        )
+
+
 async def main() -> None:
     await init_db_pool()
     try:
         captured.clear()
         await router.handle_update({"message": {"chat": {"id": CHAT_ID}, "text": "/회화"}})
+        print("--- 오늘의 주제 단어 사전학습 ---")
+        await _complete_topic_word_preview()
+        assert "회화 연습을 시작합니다" in captured[-1]["text"], "단어 사전학습 후 회화가 시작돼야 함"
+        print("=== 사전 단어학습 -> 회화 시작 OK ===")
 
         for i, reply in enumerate(REPLIES, start=1):
             print(f"--- turn {i} ---")

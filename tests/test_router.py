@@ -24,6 +24,13 @@ class FakeUsersRepo:
             "learning_mode": None,
             "placement_level": None,
             "daily_new_word_limit": 5,
+            "word_band": 0,
+            "grammar_topic_index": 0,
+            "reading_band": 0,
+            "conversation_level": 2,
+            "conversation_topic_index": 0,
+            "target_use_case": None,
+            "child_stage": 0,
             "created_at": "now",
             "last_active_at": None,
         }
@@ -46,6 +53,24 @@ class FakeUsersRepo:
 
     async def set_daily_new_word_limit(self, telegram_id, limit):
         self.users[telegram_id]["daily_new_word_limit"] = limit
+
+    async def set_child_stage(self, telegram_id, stage):
+        self.users[telegram_id]["child_stage"] = stage
+
+    async def set_word_band(self, telegram_id, band):
+        self.users[telegram_id]["word_band"] = band
+
+    async def set_grammar_topic_index(self, telegram_id, index):
+        self.users[telegram_id]["grammar_topic_index"] = index
+
+    async def set_reading_band(self, telegram_id, band):
+        self.users[telegram_id]["reading_band"] = band
+
+    async def set_conversation_level(self, telegram_id, level):
+        self.users[telegram_id]["conversation_level"] = level
+
+    async def set_conversation_topic_index(self, telegram_id, index):
+        self.users[telegram_id]["conversation_topic_index"] = index
 
     async def touch_last_active(self, telegram_id):
         pass
@@ -82,7 +107,7 @@ def _wire(monkeypatch):
 
     sent: list[tuple] = []
 
-    async def fake_send(chat_id, text, reply_markup=None):
+    async def fake_send(chat_id, text, reply_markup=None, parse_mode=None):
         sent.append((chat_id, text))
 
     async def fake_answer_cb(callback_query_id, text=None):

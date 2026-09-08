@@ -56,4 +56,5 @@ ADMIN_ONLY_COMMANDS: list[tuple[str, str]] = [
     ("pending", "승인 대기 사용자 목록"),
     ("approve", "사용자 승인 (예: /approve 123456)"),
     ("users", "전체 사용자 목록 (아이디/나이/모드/오늘활동)"),
+    ("aiusage", "AI 사용량 — Gemini/TTS 오늘·이번달 호출 수"),
 ]

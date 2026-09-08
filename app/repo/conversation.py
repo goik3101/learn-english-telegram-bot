@@ -17,13 +17,18 @@ async def has_completed_today(user_id: int) -> bool:
             return row is not None
 
 
-async def create_session(user_id: int, level: str) -> int:
+async def create_session(
+    user_id: int, level: str, topic: str | None = None, preview_word_ids: list[int] | None = None
+) -> int:
     pool = get_pool()
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "insert into conversation_sessions (user_id, level) values (%s, %s) returning id",
-                (user_id, level),
+                """
+                insert into conversation_sessions (user_id, level, topic, preview_word_ids)
+                values (%s, %s, %s, %s) returning id
+                """,
+                (user_id, level, topic, preview_word_ids or []),
             )
             row = await cur.fetchone()
             return row["id"]

@@ -3,7 +3,7 @@ from typing import Any, Optional
 from app.db import get_pool
 
 
-async def get_random_questions(level: str, limit: int) -> list[dict[str, Any]]:
+async def get_random_questions(level: str, limit: int, learning_mode: str = "GENERAL") -> list[dict[str, Any]]:
     pool = get_pool()
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
@@ -11,13 +11,117 @@ async def get_random_questions(level: str, limit: int) -> list[dict[str, Any]]:
                 """
                 select id, topic, concept_intro, prompt, choices, correct_index, explanation
                 from grammar_questions
-                where level = %s
+                where level = %s and learning_mode = %s
                 order by random()
                 limit %s
                 """,
-                (level, limit),
+                (level, learning_mode, limit),
             )
             return await cur.fetchall()
+
+
+async def get_questions_for_topic(level: str, topic: str, limit: int, learning_mode: str = "GENERAL") -> list[dict[str, Any]]:
+    """개인 맞춤 난이도(문법): 신규 세트(`/문법학습`)는 커리큘럼상 현재 주제만 출제한다."""
+    pool = get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                select id, topic, concept_intro, prompt, choices, correct_index, explanation
+                from grammar_questions
+                where level = %s and learning_mode = %s and topic = %s
+                order by random()
+                limit %s
+                """,
+                (level, learning_mode, topic, limit),
+            )
+            return await cur.fetchall()
+
+
+async def get_topic_accuracy_map(user_id: int, min_attempts: int = 3) -> dict[str, float]:
+    """주제별 정답률 — 복습(review) 출제 가중치 계산용. 최소 시도횟수 미만인 주제는 신뢰도가
+    낮아 제외한다."""
+    pool = get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                select gq.topic as topic,
+                       count(*) filter (where uga.is_correct) as correct,
+                       count(*) as total
+                from user_grammar_answers uga
+                join grammar_questions gq on gq.id = uga.question_id
+                where uga.user_id = %s and gq.topic is not null
+                group by gq.topic
+                having count(*) >= %s
+                """,
+                (user_id, min_attempts),
+            )
+            rows = await cur.fetchall()
+            return {row["topic"]: row["correct"] / row["total"] for row in rows}
+
+
+async def get_topic_recent_results(user_id: int, topic: str, limit: int) -> list[bool]:
+    """신규 세트(`/문법학습`, is_review=false)만 집계 — 복습 응답은 커리큘럼 진행에 영향을 주지 않는다."""
+    pool = get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                select uga.is_correct
+                from user_grammar_answers uga
+                join grammar_questions gq on gq.id = uga.question_id
+                where uga.user_id = %s and gq.topic = %s and uga.is_review = false
+                order by uga.answered_at desc
+                limit %s
+                """,
+                (user_id, topic, limit),
+            )
+            rows = await cur.fetchall()
+            return [row["is_correct"] for row in rows]
+
+
+async def get_weighted_review_questions(
+    level: str, limit: int, learning_mode: str, weak_topics: list[str]
+) -> list[dict[str, Any]]:
+    """복습(`/복습`) 출제 — 정답률 낮은 주제(weak_topics)에서 우선(최대 70%) 뽑고 나머지는
+    전체에서 무작위로 채운다. weak_topics가 없으면 기존과 동일하게 완전 무작위."""
+    if not weak_topics:
+        return await get_random_questions(level, limit, learning_mode)
+
+    pool = get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            weak_count = min(limit, max(1, round(limit * 0.7)))
+            await cur.execute(
+                """
+                select id, topic, concept_intro, prompt, choices, correct_index, explanation
+                from grammar_questions
+                where level = %s and learning_mode = %s and topic = any(%s)
+                order by random()
+                limit %s
+                """,
+                (level, learning_mode, weak_topics, weak_count),
+            )
+            weak_rows = await cur.fetchall()
+
+            remaining = limit - len(weak_rows)
+            if remaining <= 0:
+                return weak_rows
+
+            exclude_ids = [r["id"] for r in weak_rows] or [0]
+            await cur.execute(
+                """
+                select id, topic, concept_intro, prompt, choices, correct_index, explanation
+                from grammar_questions
+                where level = %s and learning_mode = %s and not (id = any(%s))
+                order by random()
+                limit %s
+                """,
+                (level, learning_mode, exclude_ids, remaining),
+            )
+            fill_rows = await cur.fetchall()
+            return weak_rows + fill_rows
 
 
 async def has_completed_new_session_today(user_id: int) -> bool:

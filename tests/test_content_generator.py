@@ -16,6 +16,7 @@ def test_generate_words_parses_and_filters_malformed(monkeypatch):
         "pronunciation": "/ˈæpəl/",
         "example_sentence": "I ate an apple.",
         "example_translation": "나는 사과를 먹었다.",
+        "frequency_rank": 850,
     }
     malformed = {"word": "broken"}  # 필수 필드 누락
 
@@ -80,6 +81,28 @@ def test_generate_grammar_questions_keeps_valid_key_vocabulary_and_drops_malform
     result = run(generator.generate_grammar_questions("intermediate", 1))
     assert len(result) == 1
     assert result[0]["key_vocabulary"] == [good_vocab]
+
+
+def test_generate_topic_words_parses_and_filters_malformed(monkeypatch):
+    valid = {
+        "word": "suitcase",
+        "meaning_ko": "여행 가방",
+        "part_of_speech": "noun",
+        "pronunciation": "/ˈsuːtkeɪs/",
+        "example_sentence": "I packed my suitcase.",
+        "example_translation": "나는 여행 가방을 쌌다.",
+        "frequency_rank": 2000,
+    }
+    malformed = {"word": "broken"}
+
+    async def fake_generate_json(prompt, model="gemini-3.1-flash-lite"):
+        assert "여행" in prompt
+        return json.dumps([valid, malformed])
+
+    monkeypatch.setattr(generator, "generate_json", fake_generate_json)
+
+    result = run(generator.generate_topic_words("beginner", "여행", 2))
+    assert result == [valid]
 
 
 def test_generate_words_raises_on_non_array_response(monkeypatch):

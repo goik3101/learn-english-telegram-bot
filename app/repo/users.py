@@ -51,6 +51,50 @@ async def set_placement_level(telegram_id: str, placement_level: str) -> None:
             )
 
 
+async def set_word_band(telegram_id: str, band: int) -> None:
+    pool = get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("update users set word_band = %s where telegram_id = %s", (band, telegram_id))
+
+
+async def set_conversation_level(telegram_id: str, level: int) -> None:
+    pool = get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("update users set conversation_level = %s where telegram_id = %s", (level, telegram_id))
+
+
+async def set_conversation_topic_index(telegram_id: str, index: int) -> None:
+    pool = get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "update users set conversation_topic_index = %s where telegram_id = %s", (index, telegram_id)
+            )
+
+
+async def set_reading_band(telegram_id: str, band: int) -> None:
+    pool = get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("update users set reading_band = %s where telegram_id = %s", (band, telegram_id))
+
+
+async def set_grammar_topic_index(telegram_id: str, index: int) -> None:
+    pool = get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("update users set grammar_topic_index = %s where telegram_id = %s", (index, telegram_id))
+
+
+async def set_child_stage(telegram_id: str, stage: int) -> None:
+    pool = get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("update users set child_stage = %s where telegram_id = %s", (stage, telegram_id))
+
+
 async def set_daily_new_word_limit(telegram_id: str, limit: int) -> None:
     pool = get_pool()
     async with pool.connection() as conn:

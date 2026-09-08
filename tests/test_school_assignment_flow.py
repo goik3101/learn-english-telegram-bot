@@ -8,11 +8,11 @@ class FakeContentRepo:
         self.inserted_words: list[tuple] = []
         self._next_id = 700
 
-    async def insert_words(self, level, words):
+    async def insert_words(self, level, words, learning_mode="GENERAL"):
         self.inserted_words.append((level, words))
         return len(words)
 
-    async def get_word_ids(self, words):
+    async def get_word_ids(self, words, learning_mode="GENERAL"):
         ids = {}
         for w in words:
             ids[w] = self._next_id
@@ -75,7 +75,7 @@ def _wire(monkeypatch):
 
     sent: list[tuple] = []
 
-    async def fake_send(chat_id, text, reply_markup=None):
+    async def fake_send(chat_id, text, reply_markup=None, parse_mode=None):
         sent.append((chat_id, text))
 
     async def fake_answer_cb(callback_query_id, text=None):
@@ -127,7 +127,7 @@ def test_school_assignment_full_flow_with_extracted_word_and_exam(monkeypatch):
     telegram_id = "1401"
     _setup_general_user(fake_users, telegram_id)
 
-    async def fake_extract(text, level, max_words):
+    async def fake_extract(text, level, max_words, learning_mode="GENERAL"):
         assert text == SAMPLE_TEXT
         return [
             {
@@ -140,7 +140,7 @@ def test_school_assignment_full_flow_with_extracted_word_and_exam(monkeypatch):
             }
         ]
 
-    async def fake_analyze(text, level, question_count):
+    async def fake_analyze(text, level, question_count, learning_mode="GENERAL"):
         assert text == SAMPLE_TEXT
         return ANALYSIS
 
@@ -185,10 +185,10 @@ def test_school_assignment_skips_cards_when_no_words_extracted(monkeypatch):
     telegram_id = "1402"
     _setup_general_user(fake_users, telegram_id)
 
-    async def fake_extract(text, level, max_words):
+    async def fake_extract(text, level, max_words, learning_mode="GENERAL"):
         return []
 
-    async def fake_analyze(text, level, question_count):
+    async def fake_analyze(text, level, question_count, learning_mode="GENERAL"):
         return ANALYSIS
 
     monkeypatch.setattr(router.custom_text_extractor, "extract_key_vocabulary", fake_extract)
@@ -222,10 +222,10 @@ def test_school_assignment_falls_back_to_completion_when_no_questions_generated(
     telegram_id = "1404"
     _setup_general_user(fake_users, telegram_id)
 
-    async def fake_extract(text, level, max_words):
+    async def fake_extract(text, level, max_words, learning_mode="GENERAL"):
         return []
 
-    async def fake_analyze(text, level, question_count):
+    async def fake_analyze(text, level, question_count, learning_mode="GENERAL"):
         return {"grammar_explanation": "설명만 생성됨", "questions": []}
 
     monkeypatch.setattr(router.custom_text_extractor, "extract_key_vocabulary", fake_extract)

@@ -1,3 +1,4 @@
+import html
 import logging
 from typing import Optional
 
@@ -8,6 +9,16 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
+
+
+def spoiler_html(text: str) -> str:
+    """탭하면 보이고 다시 탭하면 가려지는 텔레그램 스포일러(모자이크) — HTML parse_mode 전용.
+
+    정답을 곧바로 노출하지 않고 사용자가 원할 때만 확인하게 할 때 쓴다(예: 단어학습 주관식
+    직전 오답 공개). 이 헬퍼로 감싼 부분 외의 문구도 HTML 특수문자가 섞이면 파싱 오류가
+    나므로, 같은 메시지 안의 나머지 동적 문자열도 html.escape()로 함께 이스케이프할 것.
+    """
+    return f'<span class="tg-spoiler">{html.escape(text)}</span>'
 
 
 async def _post(method: str, payload: dict) -> None:
@@ -22,11 +33,32 @@ async def _post(method: str, payload: dict) -> None:
             logger.error("Telegram %s failed (%s): %s", method, response.status_code, response.text)
 
 
-async def send_message(chat_id: int | str, text: str, reply_markup: Optional[dict] = None) -> None:
+async def send_message(
+    chat_id: int | str, text: str, reply_markup: Optional[dict] = None, parse_mode: Optional[str] = None
+) -> None:
     payload: dict = {"chat_id": chat_id, "text": text}
     if reply_markup:
         payload["reply_markup"] = reply_markup
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     await _post("sendMessage", payload)
+
+
+async def send_voice(chat_id: int | str, audio_bytes: bytes, caption: Optional[str] = None) -> None:
+    """OGG_OPUS 등 텔레그램이 지원하는 인코딩의 음성을 음성메시지로 전송 (M16 발음듣기)."""
+    if not settings.bot_token:
+        logger.warning("BOT_TOKEN not set — skipping Telegram call sendVoice")
+        return
+
+    url = f"{TELEGRAM_API_BASE}/bot{settings.bot_token}/sendVoice"
+    data = {"chat_id": str(chat_id)}
+    if caption:
+        data["caption"] = caption
+    files = {"voice": ("speech.ogg", audio_bytes, "audio/ogg")}
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.post(url, data=data, files=files)
+        if response.status_code != 200:
+            logger.error("Telegram sendVoice failed (%s): %s", response.status_code, response.text)
 
 
 def build_inline_keyboard(buttons: list[tuple[str, str]], columns: int = 1) -> dict:

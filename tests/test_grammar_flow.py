@@ -10,8 +10,23 @@ class FakeGrammarRepo:
         self.weak_topics = weak_topics or []
         self.accuracy = accuracy
         self.recorded: list[tuple] = []
+        self.mode_calls: list[str] = []
 
-    async def get_random_questions(self, level, limit):
+    async def get_random_questions(self, level, limit, learning_mode="GENERAL"):
+        self.mode_calls.append(learning_mode)
+        return self.questions[:limit]
+
+    async def get_questions_for_topic(self, level, topic, limit, learning_mode="GENERAL"):
+        self.mode_calls.append(learning_mode)
+        return self.questions[:limit]
+
+    async def get_topic_accuracy_map(self, user_id, min_attempts=3):
+        return {}
+
+    async def get_topic_recent_results(self, user_id, topic, limit):
+        return []
+
+    async def get_weighted_review_questions(self, level, limit, learning_mode, weak_topics):
         return self.questions[:limit]
 
     async def has_completed_new_session_today(self, user_id):
@@ -48,7 +63,7 @@ def _wire(monkeypatch, questions=None, already_done_today=False):
 
     sent: list[tuple] = []
 
-    async def fake_send(chat_id, text, reply_markup=None):
+    async def fake_send(chat_id, text, reply_markup=None, parse_mode=None):
         sent.append((chat_id, text))
 
     async def fake_answer_cb(callback_query_id, text=None):

@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     admin_telegram_id: Optional[str] = None
     database_url: Optional[str] = None
     gemini_api_key: Optional[str] = None
+    google_tts_api_key: Optional[str] = None
     telegram_webhook_secret: Optional[str] = None
     port: int = 8000
 

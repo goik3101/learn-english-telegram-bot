@@ -39,11 +39,18 @@ async def main() -> None:
     try:
         async with httpx.AsyncClient(timeout=35) as client:
             while True:
-                resp = await client.get(
-                    f"{TELEGRAM_API_BASE}/bot{settings.bot_token}/getUpdates",
-                    params={"offset": offset, "timeout": 30},
-                )
-                data = resp.json()
+                try:
+                    resp = await client.get(
+                        f"{TELEGRAM_API_BASE}/bot{settings.bot_token}/getUpdates",
+                        params={"offset": offset, "timeout": 30},
+                    )
+                    data = resp.json()
+                except (httpx.HTTPError, ValueError) as exc:
+                    # 24/7 무인 운영 시 일시적 네트워크 오류로 전체 프로세스가 죽지 않도록 재시도.
+                    print("getUpdates request failed, retrying:", exc)
+                    await asyncio.sleep(3)
+                    continue
+
                 if not data.get("ok"):
                     print("getUpdates error:", data)
                     await asyncio.sleep(2)

@@ -3,12 +3,21 @@ import logging
 import google.generativeai as genai
 
 from app.config import settings
+from app.repo import ai_usage as ai_usage_repo
 
 logger = logging.getLogger(__name__)
 
 # gemini-3.6/3.7/3.8-flash 등 최신 모델은 무료 티어 일일 한도가 프로젝트당 20회로 매우 낮음(실측 확인).
 # gemini-3.1-flash-lite는 같은 세대의 구형 모델이라 표준 무료 티어(하루 1,500회)를 그대로 받는다.
 _configured = False
+
+
+async def _log_usage() -> None:
+    """M17: 프로젝트 전체 Gemini 호출량 추적 — 실패해도 본 기능에는 영향 없게 fail-open."""
+    try:
+        await ai_usage_repo.log_call("gemini")
+    except Exception:
+        logger.exception("failed to log gemini usage")
 
 
 def _ensure_configured() -> None:
@@ -28,6 +37,7 @@ async def generate_text(prompt: str, model: str = "gemini-3.1-flash-lite") -> st
     _ensure_configured()
     gen_model = genai.GenerativeModel(model)
     response = await gen_model.generate_content_async(prompt)
+    await _log_usage()
     return response.text
 
 
@@ -38,4 +48,5 @@ async def generate_json(prompt: str, model: str = "gemini-3.1-flash-lite") -> st
     _ensure_configured()
     gen_model = genai.GenerativeModel(model, generation_config={"response_mime_type": "application/json"})
     response = await gen_model.generate_content_async(prompt)
+    await _log_usage()
     return response.text

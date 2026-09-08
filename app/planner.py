@@ -6,6 +6,7 @@
 """
 
 from app.ai.gemini_client import generate_text
+from app.content.generator import tone_note
 
 _PROMPT_TEMPLATE = """너는 영어 학습 코치다. 학습자의 최근 문법 학습 기록을 보고,
 오늘의 학습을 시작하기 전에 보여줄 1~2문장짜리 한국어 격려/포커스 메시지를 만들어라.
@@ -13,17 +14,21 @@ _PROMPT_TEMPLATE = """너는 영어 학습 코치다. 학습자의 최근 문법
 학습자 레벨: {level}
 최근 문법 정답률: {accuracy}
 자주 틀리는 문법 주제: {weak_topics}
-
+{tone_note}
 말투 예시: "최근 가정법 문제에서 자주 틀리고 있어요. 오늘은 특히 집중해봐요!"
 메시지만 출력하고 다른 설명은 절대 추가하지 마라."""
 
 
-async def build_focus_message(level: str, weak_topics: list[str], accuracy: float | None) -> str | None:
+async def build_focus_message(
+    level: str, weak_topics: list[str], accuracy: float | None, learning_mode: str = "GENERAL"
+) -> str | None:
     if not weak_topics:
         return None
 
     accuracy_text = f"{accuracy:.0%}" if accuracy is not None else "정보 없음"
-    prompt = _PROMPT_TEMPLATE.format(level=level, accuracy=accuracy_text, weak_topics=", ".join(weak_topics))
+    prompt = _PROMPT_TEMPLATE.format(
+        level=level, accuracy=accuracy_text, weak_topics=", ".join(weak_topics), tone_note=tone_note(learning_mode)
+    )
     try:
         text = await generate_text(prompt)
     except Exception:
