@@ -29,6 +29,16 @@ def start_session(telegram_id: str, items: list[GrammarQuestion], is_review: boo
     return items[0] if items else None
 
 
+def is_active(telegram_id: str) -> bool:
+    return telegram_id in _sessions
+
+
+def abandon_session(telegram_id: str) -> None:
+    """/학습중단: 지금까지 답한 문항은 이미 채점/저장됐으므로(submit_answer가 매번 즉시 기록),
+    남은 미답변 문항만 버리고 세션을 지운다."""
+    _sessions.pop(telegram_id, None)
+
+
 @dataclass(frozen=True)
 class AnswerResult:
     is_correct: bool

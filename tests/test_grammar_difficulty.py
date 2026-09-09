@@ -118,6 +118,41 @@ def test_new_session_pulls_questions_for_current_curriculum_topic(monkeypatch):
     assert "현재시제" in sent[-1][1] or "현재시제" in sent[0][1]
 
 
+def test_advanced_placement_still_starts_at_first_curriculum_topic_not_its_own_level(monkeypatch):
+    """버그리포트: "advanced"로 배치된 사용자가 현재완료도 모르는 상태에서 가정법을 먼저 만났음 —
+    전역 순차 커리큘럼에서는 배치레벨과 무관하게 index=0("현재시제")부터 시작해야 한다."""
+    questions = {
+        "현재시제": [_question_row(1, "현재시제", "She ___ to school.", ["go", "goes", "going", "went"], 1)],
+        "가정법": [_question_row(2, "가정법", "If I ___ rich...", ["am", "were", "was", "be"], 1)],
+    }
+    fake_users, fake_grammar, sent = _wire(monkeypatch, questions_by_topic=questions)
+    telegram_id = "9106"
+    _setup_general_user(fake_users, telegram_id)
+    fake_users.users[telegram_id]["placement_level"] = "advanced"  # 배치는 advanced지만
+
+    run(router.handle_update({"message": {"chat": {"id": 9106}, "text": "/문법학습"}}))
+
+    assert fake_grammar.topic_calls == ["현재시제"]  # 가정법이 아니라 커리큘럼 첫 주제부터 나와야 함
+
+
+def test_missing_content_for_current_topic_does_not_leak_other_topics(monkeypatch):
+    """버그리포트: 현재 주제 콘텐츠가 없다고 레벨 전체 무작위로 대체하면 상위 주제가 새어나간다 —
+    이제는 콘텐츠가 없으면 대체하지 않고 안내만 한다."""
+    questions = {
+        # "현재시제"(index 0) 콘텐츠가 아직 없고, 대신 다른 주제만 있는 상황을 흉내낸다.
+        "가정법": [_question_row(2, "가정법", "If I ___ rich...", ["am", "were", "was", "be"], 1)],
+    }
+    fake_users, fake_grammar, sent = _wire(monkeypatch, questions_by_topic=questions)
+    telegram_id = "9107"
+    _setup_general_user(fake_users, telegram_id)
+
+    run(router.handle_update({"message": {"chat": {"id": 9107}, "text": "/문법학습"}}))
+
+    assert fake_grammar.topic_calls == ["현재시제"]
+    assert "가정법" not in sent[-1][1]
+    assert "아직" in sent[-1][1] or "준비" in sent[-1][1]
+
+
 def test_topic_advances_after_ten_correct_answers_across_sessions(monkeypatch):
     questions = {
         "현재시제": [

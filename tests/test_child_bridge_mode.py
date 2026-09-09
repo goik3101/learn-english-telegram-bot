@@ -82,6 +82,7 @@ def test_vocab_unknown_word_uses_child_bridge_distractor_pool(monkeypatch):
     assert "apple" in sent[-1][1]
 
     sent.clear()
+    run(router.handle_update(_callback_update(2001, "vocab:reveal:910")))
     run(router.handle_update(_callback_update(2001, "vocab:unknown:910")))
     # 오답 선택지가 정상적으로 만들어졌다면(distractor 조회가 CHILD_BRIDGE 모드로도 정상 동작했다는 뜻) MCQ 질문이 온다.
     assert "뜻은 무엇일까요" in sent[-1][1]

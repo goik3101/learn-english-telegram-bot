@@ -28,21 +28,23 @@ from app.repo import content as content_repo  # noqa: E402
 async def main(count_per_topic: int, learning_mode: str) -> None:
     await init_db_pool()
     try:
-        for level, topics in GRAMMAR_CURRICULUM.items():
-            for topic in topics:
-                try:
-                    questions = await generate_grammar_questions_for_topic(
-                        level, topic, count_per_topic, learning_mode=learning_mode
-                    )
-                except Exception as exc:
-                    print(f"[{level}:{learning_mode}] '{topic}' 생성 실패, 건너뜀: {exc}")
-                    continue
-
-                inserted = await content_repo.insert_grammar_questions(level, questions, learning_mode=learning_mode)
-                inserted_vocab = await content_repo.insert_key_vocabulary_from_grammar(
-                    level, questions, learning_mode=learning_mode
+        previous_topic = None
+        for topic, level in GRAMMAR_CURRICULUM:
+            try:
+                questions = await generate_grammar_questions_for_topic(
+                    level, topic, count_per_topic, learning_mode=learning_mode, previous_topic=previous_topic
                 )
-                print(f"[{level}:{learning_mode}] '{topic}' generated={len(questions)} inserted={inserted} vocab={inserted_vocab}")
+            except Exception as exc:
+                print(f"[{level}:{learning_mode}] '{topic}' 생성 실패, 건너뜀: {exc}")
+                previous_topic = topic  # 커리큘럼상 순서는 생성 성공 여부와 무관
+                continue
+
+            inserted = await content_repo.insert_grammar_questions(level, questions, learning_mode=learning_mode)
+            inserted_vocab = await content_repo.insert_key_vocabulary_from_grammar(
+                level, questions, learning_mode=learning_mode
+            )
+            print(f"[{level}:{learning_mode}] '{topic}' generated={len(questions)} inserted={inserted} vocab={inserted_vocab}")
+            previous_topic = topic
 
         print("grammar totals:", await content_repo.count_grammar_questions_by_level())
     finally:

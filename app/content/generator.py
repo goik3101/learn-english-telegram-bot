@@ -27,13 +27,18 @@ def tone_note(learning_mode: str) -> str:
 # M18(개인 맞춤 난이도): frequency_rank는 콘텐츠뱅크 단어(M4)에만 요구한다. 문법/텍스트에서
 # 추출되는 보조 단어(key_vocabulary)까지 강제하면 기존 프롬프트를 전부 바꿔야 해서 범위를 좁혔다
 # — 그 단어들은 frequency_rank가 NULL로 남고, 조회 시 정렬 맨 뒤로 밀리는 정도로만 처리된다.
+#
+# 사용자 피드백(단어 암기 효율): mnemonic(연상법)과 example_sentences(복습 회차마다 다른 예문을
+# 보여주기 위한 여러 예문)를 추가했다. example_sentence/example_translation(단일) 필드는 AI에게
+# 별도로 다시 요청하지 않고 example_sentences[0]에서 그대로 파생시킨다(불일치 위험 제거) — 아래
+# generate_words()/generate_topic_words() 참고.
 _WORD_REQUIRED_FIELDS = {
     "word",
     "meaning_ko",
     "part_of_speech",
     "pronunciation",
-    "example_sentence",
-    "example_translation",
+    "mnemonic",
+    "example_sentences",
     "frequency_rank",
 }
 _KEY_VOCAB_REQUIRED_FIELDS = {
@@ -59,6 +64,12 @@ _WORD_PROMPT_TEMPLATE = """너는 영어 학습 콘텐츠 제작자다. {level}(
 각 단어에는 실제 영어 사용빈도 순위(frequency_rank)를 Oxford 3000/5000 및 COCA(Corpus of Contemporary
 American English) 빈도 자료를 참고해 정수로 추정해서 함께 제공하라(1에 가까울수록 매우 흔한 단어,
 숫자가 클수록 드물고 어려운 단어 — 예: "important"는 500 전후, "inexorable"은 10000 이상).
+암기를 돕기 위해 각 단어마다 생생하고 구체적인 연상법(mnemonic)을 한국어로 한 문장 만들어라 — "~라는 뜻이다"
+식의 단순 뜻풀이 반복이 아니라, 발음이나 이미지·스토리를 이용해 "이 단어를 이렇게 기억해보세요: ~" 형태로
+구체적으로 작성하라(예: "obstinate(고집스러운) — 'ob'(막다)+'stinate'가 'stay'처럼 들리니, 계속 그 자리에
+'막고 버티고 서있는' 사람을 떠올려보세요").
+또한 서로 다른 문맥의 예문(example_sentences) 2~3개를 만들어라 — 나중에 이 단어를 복습할 때마다 매번
+다른 문장을 보여줘서 문맥 다양성으로 기억을 돕기 위함이다.
 {tone_note}아래 JSON 배열 형식으로만 응답하고, 다른 설명은 절대 추가하지 마라.
 [
   {{
@@ -66,14 +77,28 @@ American English) 빈도 자료를 참고해 정수로 추정해서 함께 제�
     "meaning_ko": "한국어 뜻",
     "part_of_speech": "품사 (예: noun, verb, adjective)",
     "pronunciation": "IPA 발음기호",
-    "example_sentence": "해당 단어가 포함된 영어 예문",
-    "example_translation": "예문의 한국어 해석",
+    "mnemonic": "이 단어를 이렇게 기억해보세요: ~",
+    "example_sentences": [
+      {{"sentence": "영어 예문 1", "translation": "한국어 해석 1"}},
+      {{"sentence": "영어 예문 2 (문맥이 다른 문장)", "translation": "한국어 해석 2"}}
+    ],
     "frequency_rank": 500
   }}
 ]"""
 
+# 사용자 피드백: "가정법 과거완료는 ... if+주어+had p.p. ..." 식으로 문법 용어와 공식만 나열하면
+# 이해가 안 된다는 지적을 반영한 concept_intro 작성 지침. 두 프롬프트(전체 무작위 생성/주제별 생성)가
+# 공유한다.
+_CONCEPT_INTRO_STYLE_INSTRUCTION = """concept_intro 작성 방식(중요, 반드시 지킬 것):
+- 문법 용어(주어, 목적어, 구조 등) 나열이나 공식 설명으로 시작하지 말고, 먼저 친숙한 예시 상황을
+  한두 문장으로 제시한 뒤, 그 상황에서 왜 이런 표현을 쓰는지 이야기하듯 설명하라.
+- 영어 구조 공식은 반드시 짧은 예시 문장과 함께 보여주고, 그 문장이 실제로 어떤 뉘앙스인지
+  한국어로 풀어서 설명하라(예: "이미 벌어진 일과 반대되는 상상을 할 때 쓰는 표현이에요").
+- 딱딱한 문법 교과서 말투 대신, 옆에서 설명해주는 것처럼 자연스러운 톤으로 써라."""
+
 _GRAMMAR_PROMPT_TEMPLATE = """너는 영어 문법 문제 출제자다. {level}({level_desc}) 난이도의 4지선다 영어 문법 객관식 문제 {count}개를 만들어라.
 학습자가 문제를 풀기 전에 해당 문법 개념을 먼저 이해할 수 있도록, 각 문제마다 짧은 개념 설명(concept_intro)도 함께 만들어라.
+""" + _CONCEPT_INTRO_STYLE_INSTRUCTION + """
 또한 문제 문장(prompt)에 등장하는 단어 중 학습자가 몰라서 문법 이해를 방해할 만한 핵심 단어를 2~4개 뽑아 key_vocabulary로 제공하라
 (문법과 무관한 쉬운 단어는 제외, 각 단어는 문법 문제와 같은 {level} 난이도 기준).
 {tone_note}아래 JSON 배열 형식으로만 응답하고, 다른 설명은 절대 추가하지 마라. correct_index는 0부터 시작하는 정수다.
@@ -122,7 +147,27 @@ def _is_valid_word(item: Any) -> bool:
     if not (isinstance(item, dict) and _WORD_REQUIRED_FIELDS.issubset(item.keys())):
         return False
     rank = item["frequency_rank"]
-    return isinstance(rank, int) and not isinstance(rank, bool) and rank > 0
+    if not (isinstance(rank, int) and not isinstance(rank, bool) and rank > 0):
+        return False
+    if not (isinstance(item["mnemonic"], str) and item["mnemonic"].strip()):
+        return False
+    examples = item["example_sentences"]
+    return (
+        isinstance(examples, list)
+        and len(examples) >= 2
+        and all(
+            isinstance(e, dict) and isinstance(e.get("sentence"), str) and isinstance(e.get("translation"), str)
+            for e in examples
+        )
+    )
+
+
+def _derive_singular_example(item: dict) -> None:
+    """example_sentence/example_translation(단일)은 다른 코드(insert_words 등)와의 호환을 위해
+    example_sentences[0]에서 그대로 파생시킨다 — AI에게 두 번 묻지 않아 서로 어긋날 일이 없다."""
+    first = item["example_sentences"][0]
+    item["example_sentence"] = first["sentence"]
+    item["example_translation"] = first["translation"]
 
 
 def _valid_key_vocabulary(items: Any) -> list[dict]:
@@ -189,6 +234,48 @@ async def estimate_frequency_ranks(words: list[str]) -> list[dict]:
     return valid
 
 
+_MNEMONIC_BACKFILL_PROMPT = """다음은 이미 만들어진 영어 단어와 뜻 목록이다. 각 단어마다 암기를 돕는
+생생하고 구체적인 연상법(mnemonic)을 한국어로 한 문장씩("이 단어를 이렇게 기억해보세요: ~" 형태, 단순
+뜻풀이 반복 금지) 만들고, 서로 다른 문맥의 예문(example_sentences) 2개씩도 만들어라.
+
+단어 목록: {words}
+
+아래 JSON 배열 형식으로만 응답하고, 다른 설명은 절대 추가하지 마라. 입력된 단어 개수와 정확히 같은
+개수로, 입력 순서와 무관하게 word 필드로 매칭되도록 응답하라.
+[
+  {{
+    "word": "영어단어",
+    "mnemonic": "이 단어를 이렇게 기억해보세요: ~",
+    "example_sentences": [
+      {{"sentence": "영어 예문 1", "translation": "한국어 해석 1"}},
+      {{"sentence": "영어 예문 2 (문맥이 다른 문장)", "translation": "한국어 해석 2"}}
+    ]
+  }}
+]"""
+
+
+async def estimate_mnemonics_and_examples(words: list[dict]) -> list[dict]:
+    """기존(mnemonic 도입 이전) 콘텐츠뱅크 단어 소급 백필용 — scripts/backfill_word_mnemonics.py.
+
+    words: [{"word": ..., "meaning_ko": ...}, ...]
+    """
+    word_list = ", ".join(f"{w['word']}({w['meaning_ko']})" for w in words)
+    prompt = _MNEMONIC_BACKFILL_PROMPT.format(words=word_list)
+    raw = await generate_json(prompt)
+    items = _parse_json_array(raw)
+    valid = []
+    for item in items:
+        if not (isinstance(item, dict) and isinstance(item.get("word"), str) and isinstance(item.get("mnemonic"), str)):
+            continue
+        examples = item.get("example_sentences")
+        if not (isinstance(examples, list) and len(examples) >= 1):
+            continue
+        valid.append(item)
+    if len(valid) < len(items):
+        logger.warning("dropped %d malformed mnemonic backfill items", len(items) - len(valid))
+    return valid
+
+
 async def generate_words(level: str, count: int, learning_mode: str = "GENERAL") -> list[dict]:
     prompt = _WORD_PROMPT_TEMPLATE.format(
         level=level, level_desc=LEVEL_DESCRIPTIONS[level], count=count, tone_note=tone_note(learning_mode)
@@ -198,6 +285,8 @@ async def generate_words(level: str, count: int, learning_mode: str = "GENERAL")
     valid = [item for item in items if _is_valid_word(item)]
     if len(valid) < len(items):
         logger.warning("dropped %d malformed word items", len(items) - len(valid))
+    for item in valid:
+        _derive_singular_example(item)
     return valid
 
 
@@ -225,6 +314,9 @@ _TOPIC_WORD_PROMPT_TEMPLATE = """너는 영어 학습 콘텐츠 제작자다. �
 이 주제로 실제 대화할 때 자주 쓰일 법한 단어 위주로 골라라(품사 제한 없음). 각 단어에는 실제 영어
 사용빈도 순위(frequency_rank)를 Oxford 3000/5000 및 COCA(Corpus of Contemporary American English)
 빈도 자료를 참고해 정수로 추정해서 함께 제공하라(1에 가까울수록 흔한 단어, 숫자가 클수록 드문 단어).
+암기를 돕기 위해 각 단어마다 생생하고 구체적인 연상법(mnemonic)을 한국어로 한 문장 만들어라("이 단어를
+이렇게 기억해보세요: ~" 형태, 단순 뜻풀이 반복 금지). 또한 서로 다른 문맥의 예문(example_sentences)
+2~3개를 만들어라 — 복습할 때마다 다른 문장을 보여주기 위함이다.
 {tone_note}아래 JSON 배열 형식으로만 응답하고, 다른 설명은 절대 추가하지 마라.
 [
   {{
@@ -232,8 +324,11 @@ _TOPIC_WORD_PROMPT_TEMPLATE = """너는 영어 학습 콘텐츠 제작자다. �
     "meaning_ko": "한국어 뜻",
     "part_of_speech": "품사 (예: noun, verb, adjective)",
     "pronunciation": "IPA 발음기호",
-    "example_sentence": "해당 단어가 포함된 영어 예문",
-    "example_translation": "예문의 한국어 해석",
+    "mnemonic": "이 단어를 이렇게 기억해보세요: ~",
+    "example_sentences": [
+      {{"sentence": "영어 예문 1", "translation": "한국어 해석 1"}},
+      {{"sentence": "영어 예문 2 (문맥이 다른 문장)", "translation": "한국어 해석 2"}}
+    ],
     "frequency_rank": 500
   }}
 ]"""
@@ -249,6 +344,8 @@ async def generate_topic_words(level: str, topic: str, count: int, learning_mode
     valid = [item for item in items if _is_valid_word(item)]
     if len(valid) < len(items):
         logger.warning("dropped %d malformed topic word items for topic %s", len(items) - len(valid), topic)
+    for item in valid:
+        _derive_singular_example(item)
     return valid
 
 
@@ -256,8 +353,9 @@ _GRAMMAR_TOPIC_PROMPT_TEMPLATE = """너는 영어 문법 문제 출제자다. {l
 대해서만 4지선다 객관식 문제 {count}개를 만들어라 (다른 주제는 섞지 마라).
 
 문법 주제: {topic}
-
+{previous_topic_note}
 학습자가 문제를 풀기 전에 해당 문법 개념을 먼저 이해할 수 있도록, 각 문제마다 짧은 개념 설명(concept_intro)도 함께 만들어라.
+""" + _CONCEPT_INTRO_STYLE_INSTRUCTION + """
 또한 문제 문장(prompt)에 등장하는 단어 중 학습자가 몰라서 문법 이해를 방해할 만한 핵심 단어를 2~4개 뽑아 key_vocabulary로 제공하라
 (문법과 무관한 쉬운 단어는 제외, 각 단어는 문법 문제와 같은 {level} 난이도 기준).
 {tone_note}아래 JSON 배열 형식으로만 응답하고, 다른 설명은 절대 추가하지 마라. correct_index는 0부터 시작하는 정수다.
@@ -284,15 +382,27 @@ _GRAMMAR_TOPIC_PROMPT_TEMPLATE = """너는 영어 문법 문제 출제자다. {l
 
 
 async def generate_grammar_questions_for_topic(
-    level: str, topic: str, count: int, learning_mode: str = "GENERAL"
+    level: str, topic: str, count: int, learning_mode: str = "GENERAL", previous_topic: str | None = None
 ) -> list[dict]:
     """개인 맞춤 난이도(문법): 커리큘럼(app/grammar/curriculum.py)의 특정 주제 하나만 골라 생성.
 
     AI가 topic 필드를 살짝 다르게 표현할 수 있어, DB 조회 시 정확히 일치하도록 요청한 주제
-    문자열로 덮어써서 저장한다.
+    문자열로 덮어써서 저장한다. previous_topic을 주면(전역 순차 커리큘럼상 바로 앞 주제) 사용자
+    피드백 반영: "이미 아는 문법과 비교해서 한 단계 더 나간 표현"이라는 식으로 연결해 설명하게 한다.
     """
+    previous_topic_note = (
+        f"학습자는 바로 앞 단계인 '{previous_topic}'를 이미 통과했다 — 가능하면 그 문법과 비교해서 "
+        f"\"'{previous_topic}'에서 한 단계 더 나간 표현\"이라는 식으로 연결해서 설명하라.\n"
+        if previous_topic
+        else ""
+    )
     prompt = _GRAMMAR_TOPIC_PROMPT_TEMPLATE.format(
-        level=level, level_desc=LEVEL_DESCRIPTIONS[level], count=count, topic=topic, tone_note=tone_note(learning_mode)
+        level=level,
+        level_desc=LEVEL_DESCRIPTIONS[level],
+        count=count,
+        topic=topic,
+        previous_topic_note=previous_topic_note,
+        tone_note=tone_note(learning_mode),
     )
     raw = await generate_json(prompt)
     items = _parse_json_array(raw)

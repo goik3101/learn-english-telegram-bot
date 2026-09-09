@@ -57,6 +57,7 @@ def test_word_card_includes_pronunciation_button(monkeypatch):
     _setup_general_user(fake_users, telegram_id)
 
     run(router.handle_update({"message": {"chat": {"id": 5001}, "text": "/단어학습"}}))
+    run(router.handle_update(_callback_update(5001, "vocab:reveal:700")))  # 능동적 상기: 정답 공개 후에야 발음듣기 버튼이 뜸
     buttons = _all_buttons(sent[-1][2])
     tts_buttons = [b for b in buttons if b["callback_data"] == "ttsword:700"]
     assert len(tts_buttons) == 1

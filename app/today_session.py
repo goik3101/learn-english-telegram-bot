@@ -22,6 +22,11 @@ def current_stage(telegram_id: str) -> str | None:
     return STAGES[idx] if idx is not None else None
 
 
+def stop(telegram_id: str) -> None:
+    """/학습중단: 오늘의 학습 자동 체이닝을 중간에 끊는다(현재 하위 단계 세션은 각자 따로 정리)."""
+    _active.pop(telegram_id, None)
+
+
 def advance(telegram_id: str) -> str | None:
     """다음 단계 이름을 반환. 더 이상 없으면 세션을 종료하고 None을 반환."""
     idx = _active.get(telegram_id)

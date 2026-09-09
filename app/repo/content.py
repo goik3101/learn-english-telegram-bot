@@ -12,12 +12,13 @@ async def insert_words(level: str, words: list[dict], learning_mode: str = "GENE
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
             for w in words:
+                example_sentences = w.get("example_sentences")
                 await cur.execute(
                     """
                     insert into words
                         (word, meaning_ko, part_of_speech, pronunciation, example_sentence, example_translation,
-                         level, learning_mode, frequency_rank)
-                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         level, learning_mode, frequency_rank, mnemonic, example_sentences)
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     on conflict (word, learning_mode) do nothing
                     """,
                     (
@@ -30,6 +31,8 @@ async def insert_words(level: str, words: list[dict], learning_mode: str = "GENE
                         level,
                         learning_mode,
                         w.get("frequency_rank"),
+                        w.get("mnemonic"),
+                        Json(example_sentences) if example_sentences else None,
                     ),
                 )
                 inserted += cur.rowcount
@@ -69,6 +72,25 @@ async def update_frequency_rank(word_id: int, frequency_rank: int) -> None:
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute("update words set frequency_rank = %s where id = %s", (frequency_rank, word_id))
+
+
+async def get_words_missing_mnemonic() -> list[dict]:
+    """단어 암기 효율 개선(연상법/예문다양화) 소급 백필용 — scripts/backfill_word_mnemonics.py."""
+    pool = get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("select id, word, meaning_ko from words where mnemonic is null")
+            return await cur.fetchall()
+
+
+async def update_mnemonic_and_examples(word_id: int, mnemonic: str, example_sentences: list[dict]) -> None:
+    pool = get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "update words set mnemonic = %s, example_sentences = %s where id = %s",
+                (mnemonic, Json(example_sentences), word_id),
+            )
 
 
 async def get_word_ids(words: list[str], learning_mode: str = "GENERAL") -> dict[str, int]:

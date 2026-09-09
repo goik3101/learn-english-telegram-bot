@@ -14,17 +14,31 @@ class WordItem:
     interval_days: int
     is_new: bool
     learning_mode: str = "GENERAL"
+    mnemonic: str | None = None
+    example_sentences: list[dict] | None = None  # [{"sentence":..,"translation":..}, ...] — 복습회차마다 다른 예문
+    review_count: int = 0
+
+
+def pick_example(item: WordItem) -> tuple[str | None, str | None]:
+    """사용자 피드백(단어 암기): 복습 회차마다 같은 예문만 반복되지 않도록, 여러 예문이 있으면
+    review_count로 순환시켜 고른다. 예문이 하나뿐이거나(과거 데이터) 없으면 기존 단일 컬럼 그대로."""
+    examples = item.example_sentences
+    if examples:
+        chosen = examples[item.review_count % len(examples)]
+        return chosen.get("sentence"), chosen.get("translation")
+    return item.example_sentence, item.example_translation
 
 
 @dataclass
 class VocabSession:
     queue: list[WordItem]
     index: int = 0
-    stage: str = "card"  # "card" | "mcq" | "subjective"
+    stage: str = "recall"  # "recall"(뜻 추측) | "card"(정답 공개) | "mcq" | "subjective"
     mcq_choices: list[str] = field(default_factory=list)
     mcq_correct_index: int = 0
     reviewed: int = 0
     correct: int = 0
+    new_words_seen: list[tuple[str, str]] = field(default_factory=list)  # (word, meaning_ko) — 세션 종료 요약용
 
 
 # 소수 사용자 규모(섹션3-2)를 고려해 별도 세션 테이블 없이 프로세스 메모리로 관리 (레벨진단과 동일한 설계 결정).
@@ -50,6 +64,11 @@ def current_item(telegram_id: str) -> WordItem | None:
 def current_stage(telegram_id: str) -> str | None:
     session = _sessions.get(telegram_id)
     return session.stage if session else None
+
+
+def enter_card_stage(telegram_id: str) -> None:
+    """능동적 상기(active recall): 뜻을 추측해본 뒤에야 정답 카드를 공개하는 단계로 넘어간다."""
+    _sessions[telegram_id].stage = "card"
 
 
 def enter_mcq_stage(telegram_id: str, choices: list[str], correct_index: int) -> None:
@@ -79,18 +98,22 @@ def record_result(telegram_id: str, is_correct: bool) -> None:
 class SessionSummary:
     reviewed: int
     correct: int
+    new_words: list[tuple[str, str]]
 
 
 def advance(telegram_id: str) -> WordItem | None:
     session = _sessions[telegram_id]
+    current = current_item(telegram_id)
+    if current is not None and current.is_new:
+        session.new_words_seen.append((current.word, current.meaning_ko))
     session.index += 1
-    session.stage = "card"
+    session.stage = "recall"
     return current_item(telegram_id)
 
 
 def finish_session(telegram_id: str) -> SessionSummary:
     session = _sessions.pop(telegram_id)
-    return SessionSummary(reviewed=session.reviewed, correct=session.correct)
+    return SessionSummary(reviewed=session.reviewed, correct=session.correct, new_words=session.new_words_seen)
 
 
 # --- 단어시험(/단어시험): 이미 배운 단어 중 샘플로 객관식 테스트, SRS에는 영향 없음 ---
@@ -117,6 +140,19 @@ _quiz_sessions: dict[str, QuizSession] = {}
 def start_quiz(telegram_id: str, items: list[QuizItem]) -> QuizItem | None:
     _quiz_sessions[telegram_id] = QuizSession(items=items)
     return items[0] if items else None
+
+
+def is_quiz_active(telegram_id: str) -> bool:
+    return telegram_id in _quiz_sessions
+
+
+def abandon_quiz(telegram_id: str) -> None:
+    _quiz_sessions.pop(telegram_id, None)
+
+
+def abandon_session(telegram_id: str) -> None:
+    """/학습중단: 이미 답한 카드는 매 답변마다 즉시 SRS에 반영됐으므로, 남은 카드만 버린다."""
+    _sessions.pop(telegram_id, None)
 
 
 @dataclass(frozen=True)

@@ -10,8 +10,9 @@ async def get_due_review_words(user_id: int, today: date) -> list[dict[str, Any]
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                select uw.word_id, uw.ease, uw.interval_days,
-                       w.word, w.meaning_ko, w.pronunciation, w.example_sentence, w.example_translation, w.level
+                select uw.word_id, uw.ease, uw.interval_days, uw.review_count,
+                       w.word, w.meaning_ko, w.pronunciation, w.example_sentence, w.example_translation, w.level,
+                       w.mnemonic, w.example_sentences
                 from user_words uw
                 join words w on w.id = uw.word_id
                 where uw.user_id = %s and uw.next_review_date <= %s and uw.status != 'new'
@@ -48,7 +49,8 @@ async def get_new_words(
             await cur.execute(
                 f"""
                 select w.id as word_id, w.word, w.meaning_ko, w.pronunciation,
-                       w.example_sentence, w.example_translation, w.level, w.frequency_rank
+                       w.example_sentence, w.example_translation, w.level, w.frequency_rank,
+                       w.mnemonic, w.example_sentences
                 from words w
                 where {where_clause}
                   and not exists (
@@ -123,14 +125,16 @@ async def upsert_word_progress(
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                insert into user_words (user_id, word_id, status, ease, interval_days, next_review_date, last_reviewed_at)
-                values (%s, %s, %s, %s, %s, %s, now())
+                insert into user_words
+                    (user_id, word_id, status, ease, interval_days, next_review_date, last_reviewed_at, review_count)
+                values (%s, %s, %s, %s, %s, %s, now(), 1)
                 on conflict (user_id, word_id) do update set
                     status = excluded.status,
                     ease = excluded.ease,
                     interval_days = excluded.interval_days,
                     next_review_date = excluded.next_review_date,
-                    last_reviewed_at = now()
+                    last_reviewed_at = now(),
+                    review_count = user_words.review_count + 1
                 """,
                 (user_id, word_id, status, ease, interval_days, next_review_date),
             )

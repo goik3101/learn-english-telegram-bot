@@ -11,6 +11,7 @@ SCHOOL_ASSIGNMENT = "📝 학교 수행평가"
 SCHOOL_EXAM = "📅 시험관리"
 REVIEW = "🔁 복습"
 PROGRESS = "📊 진도 확인"
+STOP_LEARNING = "🛑 학습중단"
 ADMIN = "⚙️ 관리자"
 
 # 아직 구현되지 않은 버튼 (섹션19-7: 미구현 항목도 UI에는 노출하되 안내 메시지로 대체) — 현재는 없음, 모두 구현됨
@@ -18,7 +19,10 @@ NOT_YET_IMPLEMENTED: dict[str, str] = {}
 
 
 def build_main_menu_keyboard(is_admin: bool) -> dict:
+    # 사용자 피드백: 문법/단어/해석/회화 등 어떤 학습 중에도 중단할 방법이 없었음 —
+    # 명령어를 몰라도 언제든 누를 수 있게 메인 메뉴에 상시 노출한다(맨 위 줄).
     rows = [
+        [STOP_LEARNING],
         [TODAY_LEARNING, VOCAB_STUDY],
         [VOCAB_QUIZ, GRAMMAR_STUDY],
         [READING, CONVERSATION],
@@ -36,6 +40,7 @@ def build_main_menu_keyboard(is_admin: bool) -> dict:
 GENERAL_COMMANDS: list[tuple[str, str]] = [
     ("start", "시작하기 / 승인요청"),
     ("menu", "메인 메뉴 보기"),
+    ("stoplearning", "지금 진행 중인 학습 중단 (진행한 부분은 저장됨)"),
     ("todaylearning", "오늘의 학습 (단어→문법 자동 진행)"),
     ("leveltest", "레벨 진단 다시 응시"),
     ("vocabstudy", "단어 학습 (아는단어/모르는단어)"),

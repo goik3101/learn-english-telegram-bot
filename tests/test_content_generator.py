@@ -14,8 +14,11 @@ def test_generate_words_parses_and_filters_malformed(monkeypatch):
         "meaning_ko": "사과",
         "part_of_speech": "noun",
         "pronunciation": "/ˈæpəl/",
-        "example_sentence": "I ate an apple.",
-        "example_translation": "나는 사과를 먹었다.",
+        "mnemonic": "이 단어를 이렇게 기억해보세요: 사과는 하루에 하나씩(an apple a day).",
+        "example_sentences": [
+            {"sentence": "I ate an apple.", "translation": "나는 사과를 먹었다."},
+            {"sentence": "She bought a red apple.", "translation": "그녀는 빨간 사과를 샀다."},
+        ],
         "frequency_rank": 850,
     }
     malformed = {"word": "broken"}  # 필수 필드 누락
@@ -27,7 +30,8 @@ def test_generate_words_parses_and_filters_malformed(monkeypatch):
     monkeypatch.setattr(generator, "generate_json", fake_generate_json)
 
     result = run(generator.generate_words("beginner", 2))
-    assert result == [valid]
+    expected = {**valid, "example_sentence": "I ate an apple.", "example_translation": "나는 사과를 먹었다."}
+    assert result == [expected]
 
 
 def test_generate_grammar_questions_parses_and_filters_malformed(monkeypatch):
@@ -89,8 +93,11 @@ def test_generate_topic_words_parses_and_filters_malformed(monkeypatch):
         "meaning_ko": "여행 가방",
         "part_of_speech": "noun",
         "pronunciation": "/ˈsuːtkeɪs/",
-        "example_sentence": "I packed my suitcase.",
-        "example_translation": "나는 여행 가방을 쌌다.",
+        "mnemonic": "이 단어를 이렇게 기억해보세요: 'suit'(정장)를 'case'(가방)에 넣는 모습.",
+        "example_sentences": [
+            {"sentence": "I packed my suitcase.", "translation": "나는 여행 가방을 쌌다."},
+            {"sentence": "Her suitcase was too heavy.", "translation": "그녀의 여행 가방은 너무 무거웠다."},
+        ],
         "frequency_rank": 2000,
     }
     malformed = {"word": "broken"}
@@ -102,7 +109,8 @@ def test_generate_topic_words_parses_and_filters_malformed(monkeypatch):
     monkeypatch.setattr(generator, "generate_json", fake_generate_json)
 
     result = run(generator.generate_topic_words("beginner", "여행", 2))
-    assert result == [valid]
+    expected = {**valid, "example_sentence": "I packed my suitcase.", "example_translation": "나는 여행 가방을 쌌다."}
+    assert result == [expected]
 
 
 def test_generate_words_raises_on_non_array_response(monkeypatch):

@@ -94,11 +94,11 @@ async def main() -> None:
         else:
             print("=== 오늘 신규 단어 없음(정상 동작, 큐 로직 자체는 통과) ===")
 
-        # 2) 문법: 현재 커리큘럼 주제로 실제 출제되는지 확인
+        # 2) 문법: 현재 커리큘럼 주제로 실제 출제되는지 확인 (배치레벨과 무관한 전역 순차 커리큘럼)
         print("\n--- 2) 문법학습 (커리큘럼 게이팅) ---")
         user = await users_repo.get_user_by_telegram_id(telegram_id)
-        level = user["placement_level"] or "beginner"
-        expected_topic = topic_for_index(level, user["grammar_topic_index"] or 0)
+        entry = topic_for_index(user["grammar_topic_index"] or 0)
+        expected_topic = entry[0] if entry else None
         print(f"기대 주제: {expected_topic}")
         await _send_text(chat_id, "/문법학습")
         all_text = "\n".join(m["text"] for m in captured)

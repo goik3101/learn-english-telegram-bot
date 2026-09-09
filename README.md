@@ -32,6 +32,6 @@
 기술 스택
 Backend: Python + FastAPI
 Database: PostgreSQL (Supabase)
-Hosting: Railway
+Hosting: Render
 AI: Gemini 2.5 Flash (기본), Claude API (필요시 보완)
 Bot: Telegram Bot API (webhook)
