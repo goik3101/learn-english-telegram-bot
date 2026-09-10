@@ -5,7 +5,12 @@ from tests.test_conversation_flow import FakeContentRepo, _complete_topic_word_p
 from tests.test_grammar_flow import FakeGrammarRepo, _question_row
 from tests.test_reading_flow import FakeReadingRepo, _passage_row
 from tests.test_router import FakeUsersRepo, run
-from tests.test_vocab_flow import FakeUserWordsRepo, _word_row
+from tests.test_vocab_flow import (
+    FakeContentGenerator,
+    FakeLearningSessionsRepo,
+    FakeUserWordsRepo,
+    _word_row,
+)
 
 
 def test_age_11_maps_to_child_bridge_10_and_below_beginner_12_and_above_general():
@@ -37,11 +42,15 @@ def _wire(monkeypatch, new_rows=None, questions=None, passage_row=None):
     fake_user_words = FakeUserWordsRepo(new_rows=new_rows)
     fake_grammar = FakeGrammarRepo(questions=questions)
     fake_reading = FakeReadingRepo(passage_row=passage_row)
+    fake_content = FakeContentRepo(topic_word_rows=new_rows)
 
     monkeypatch.setattr(router, "users_repo", fake_users)
     monkeypatch.setattr(router, "user_words_repo", fake_user_words)
     monkeypatch.setattr(router, "grammar_repo", fake_grammar)
     monkeypatch.setattr(router, "reading_repo", fake_reading)
+    monkeypatch.setattr(router, "content_repo", fake_content)
+    monkeypatch.setattr(router, "learning_sessions_repo", FakeLearningSessionsRepo())
+    monkeypatch.setattr(router, "content_generator", FakeContentGenerator())
     monkeypatch.setattr(router, "db_available", lambda: True)
 
     sent: list[tuple] = []
@@ -88,18 +97,23 @@ def test_vocab_unknown_word_uses_child_bridge_distractor_pool(monkeypatch):
 
 
 def test_vocab_new_words_query_uses_child_bridge_mode(monkeypatch):
+    # 오늘의 주제 통합 학습으로 바뀌면서 신규 단어는 더 이상 get_new_words(밴드 필터)가 아니라
+    # content_repo.get_topic_words로 조회된다 — 그 호출이 CHILD_BRIDGE 모드로 좁혀지는지 확인한다.
     calls: list[str] = []
     new_rows = [_word_row(911, "apple", "사과")]
 
-    class RecordingRepo(FakeUserWordsRepo):
-        async def get_new_words(self, user_id, level, limit, learning_mode="GENERAL", min_rank=None, max_rank=None):
+    class RecordingContentRepo(FakeContentRepo):
+        async def get_topic_words(self, topic, level, learning_mode, limit):
             calls.append(learning_mode)
-            return await super().get_new_words(user_id, level, limit, learning_mode, min_rank, max_rank)
+            return await super().get_topic_words(topic, level, learning_mode, limit)
 
     fake_users = FakeUsersRepo()
-    fake_user_words = RecordingRepo(new_rows=new_rows)
+    fake_user_words = FakeUserWordsRepo(new_rows=new_rows)
     monkeypatch.setattr(router, "users_repo", fake_users)
     monkeypatch.setattr(router, "user_words_repo", fake_user_words)
+    monkeypatch.setattr(router, "content_repo", RecordingContentRepo(topic_word_rows=new_rows))
+    monkeypatch.setattr(router, "learning_sessions_repo", FakeLearningSessionsRepo())
+    monkeypatch.setattr(router, "content_generator", FakeContentGenerator())
     monkeypatch.setattr(router, "db_available", lambda: True)
 
     async def fake_send(chat_id, text, reply_markup=None, parse_mode=None):
@@ -140,6 +154,8 @@ def test_conversation_opening_passes_child_bridge_mode(monkeypatch):
     monkeypatch.setattr(router, "users_repo", fake_users)
     monkeypatch.setattr(router, "content_repo", fake_content)
     monkeypatch.setattr(router, "user_words_repo", fake_user_words)
+    monkeypatch.setattr(router, "learning_sessions_repo", FakeLearningSessionsRepo())
+    monkeypatch.setattr(router, "content_generator", FakeContentGenerator())
     monkeypatch.setattr(router, "db_available", lambda: True)
 
     calls: list[str] = []

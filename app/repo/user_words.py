@@ -64,6 +64,43 @@ async def get_new_words(
             return await cur.fetchall()
 
 
+async def get_learned_word_ids(user_id: int, word_ids: list[int]) -> set[int]:
+    """오늘의 주제 통합 학습: 오늘의 단어 풀 중 이미 user_words에 있는(복습중이거나 완료된) 단어는
+    "신규"로 다시 보여주지 않기 위한 조회."""
+    if not word_ids:
+        return set()
+    pool = get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "select word_id from user_words where user_id = %s and word_id = any(%s)",
+                (user_id, word_ids),
+            )
+            rows = await cur.fetchall()
+            return {row["word_id"] for row in rows}
+
+
+async def get_known_topic_words(user_id: int, topic: str, level: str, learning_mode: str) -> list[dict[str, Any]]:
+    """오늘의 주제 통합 학습: 이 주제로 그동안(오늘 새로 뽑은 목록뿐 아니라 topic_words에 누적된
+    전체) 생성됐던 단어 중, 사용자가 이미 학습 완료(status='known')한 것 — 있으면 해석 지문 생성 시
+    신규 단어와 함께 쓸 수 있는 어휘 풀에 포함한다(없으면 빈 목록, 정상)."""
+    pool = get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                select w.id as word_id, w.word, w.meaning_ko
+                from topic_words tw
+                join words w on w.id = tw.word_id
+                join user_words uw on uw.word_id = w.id
+                where tw.topic = %s and tw.level = %s and tw.learning_mode = %s
+                  and uw.user_id = %s and uw.status = 'known'
+                """,
+                (topic, level, learning_mode, user_id),
+            )
+            return await cur.fetchall()
+
+
 async def record_word_attempt(user_id: int, word_id: int, band: int, is_correct: bool) -> None:
     """신규 단어(첫 학습)를 완료했을 때만 기록 — SRS 복습은 대상이 아니다."""
     pool = get_pool()

@@ -12,12 +12,19 @@ class FakeUserWordsRepo:
         self.distractor_pool = ["뜻A", "뜻B", "뜻C"]
         self.word_attempts: list[tuple] = []
         self.band_results: dict[int, list[bool]] = {}
+        self.known_topic_words: list[dict] = []
 
     async def get_due_review_words(self, user_id, today):
         return self.due_rows
 
     async def get_new_words(self, user_id, level, limit, learning_mode="GENERAL", min_rank=None, max_rank=None):
         return self.new_rows[:limit]
+
+    async def get_learned_word_ids(self, user_id, word_ids):
+        return set()  # 테스트 기본값: 아무도 아직 안 배운 상태 — new_rows가 그대로 "신규"로 나옴
+
+    async def get_known_topic_words(self, user_id, topic, level, learning_mode):
+        return self.known_topic_words
 
     async def get_distractor_meanings(self, level, exclude_word_id, count, learning_mode="GENERAL"):
         return self.distractor_pool[:count]
@@ -36,6 +43,93 @@ class FakeUserWordsRepo:
         return self.band_results.get(band, [])[:limit]
 
 
+class FakeLearningSessionsRepo:
+    """오늘의 주제 통합 학습 테스트용 — learning_sessions을 메모리 dict로 흉내낸다."""
+
+    def __init__(self):
+        self.rows: dict[int, dict] = {}
+
+    def _row(self, user_id):
+        return self.rows.setdefault(
+            user_id,
+            {
+                "stages_completed": [],
+                "today_topic": None,
+                "today_topic_word_ids": [],
+                "today_reading_passage_id": None,
+                "completed_at": None,
+            },
+        )
+
+    async def start_today(self, user_id):
+        self._row(user_id)
+
+    async def get_today_row(self, user_id):
+        return self.rows.get(user_id)
+
+    async def mark_stage_complete(self, user_id, stage):
+        self._row(user_id)["stages_completed"].append(stage)
+
+    async def set_today_topic(self, user_id, topic, word_ids):
+        row = self._row(user_id)
+        row["today_topic"] = topic
+        row["today_topic_word_ids"] = word_ids
+
+    async def set_today_reading_passage(self, user_id, passage_id):
+        self._row(user_id)["today_reading_passage_id"] = passage_id
+
+    async def get_recent_topics(self, user_id, days):
+        return []
+
+    async def increment_ai_call_count(self, user_id, by=1):
+        pass
+
+    async def mark_completed(self, user_id):
+        self._row(user_id)["completed_at"] = "now"
+
+
+class FakeContentRepo:
+    """오늘의 주제 통합 학습 테스트용 — topic_word_rows를 곧바로 "오늘의 주제 단어"로 취급한다
+    (기존 new_rows 픽스처를 그대로 오늘의 주제 단어 풀로 재사용)."""
+
+    def __init__(self, topic_word_rows=None):
+        self.topic_word_rows = topic_word_rows or []
+        self.inserted_words: list[tuple] = []
+        self.linked: list[tuple] = []
+        self._next_id = 900
+
+    async def get_topic_words(self, topic, level, learning_mode, limit):
+        return self.topic_word_rows[:limit]
+
+    async def get_words_by_ids(self, word_ids):
+        return [r for r in self.topic_word_rows if r["word_id"] in word_ids]
+
+    async def insert_words(self, level, words, learning_mode="GENERAL"):
+        self.inserted_words.append((level, words))
+        return len(words)
+
+    async def get_word_ids(self, words, learning_mode="GENERAL"):
+        ids = {}
+        for w in words:
+            ids[w] = self._next_id
+            self._next_id += 1
+        return ids
+
+    async def insert_topic_words(self, topic, level, learning_mode, word_ids):
+        self.linked.append((topic, level, learning_mode, word_ids))
+
+    async def get_frequency_ranks(self, words):
+        return {}
+
+
+class FakeContentGenerator:
+    """실제 Gemini 호출을 절대 하지 않는 안전한 기본값 — 테스트 픽스처(topic_word_rows)가 이미
+    충분하지 않아도(TOPIC_WORD_MIN 미만) 여기서 빈 목록을 반환해 폴백하게 한다."""
+
+    async def generate_topic_words(self, level, topic, count, learning_mode="GENERAL"):
+        return []
+
+
 def _word_row(word_id, word, meaning_ko):
     return {
         "word_id": word_id,
@@ -51,8 +145,13 @@ def _word_row(word_id, word, meaning_ko):
 def _wire(monkeypatch, due_rows=None, new_rows=None, learned_rows=None):
     fake_users = FakeUsersRepo()
     fake_user_words = FakeUserWordsRepo(due_rows=due_rows, new_rows=new_rows, learned_rows=learned_rows)
+    fake_learning_sessions = FakeLearningSessionsRepo()
+    fake_content = FakeContentRepo(topic_word_rows=new_rows)
     monkeypatch.setattr(router, "users_repo", fake_users)
     monkeypatch.setattr(router, "user_words_repo", fake_user_words)
+    monkeypatch.setattr(router, "learning_sessions_repo", fake_learning_sessions)
+    monkeypatch.setattr(router, "content_repo", fake_content)
+    monkeypatch.setattr(router, "content_generator", FakeContentGenerator())
     monkeypatch.setattr(router, "db_available", lambda: True)
 
     sent: list[tuple] = []

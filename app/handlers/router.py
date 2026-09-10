@@ -3,6 +3,7 @@ import logging
 from datetime import date, timedelta
 
 from app import child_menu, difficulty, menu, planner, srs, today_session, tts
+from app import topics as daily_topics
 from app.ai import tts_client
 from app.child_beginner import curriculum as child_curriculum
 from app.child_beginner import service as child_service
@@ -11,7 +12,6 @@ from app.content import generator as content_generator
 from app.conversation import chat as conversation_chat
 from app.conversation import difficulty as conversation_difficulty
 from app.conversation import service as conversation_service
-from app.conversation import topics as conversation_topics
 from app.custom_text import extractor as custom_text_extractor
 from app.custom_text import feedback as custom_text_feedback
 from app.custom_text import service as custom_text_service
@@ -542,30 +542,24 @@ async def _handle_placement_answer(telegram_id: str, chat_id: int, question_id: 
     )
 
 
-async def _build_vocab_queue(user) -> list[vocab_service.WordItem]:
+async def _build_vocab_queue(user) -> tuple[str, list[vocab_service.WordItem]]:
     today = date.today()
     due_rows = await user_words_repo.get_due_review_words(user["id"], today)
     new_limit = user["daily_new_word_limit"] or srs.DEFAULT_DAILY_NEW_WORDS
-    level = user["placement_level"] or "beginner"
     mode = user["learning_mode"]
 
-    # 개인 맞춤 난이도(단어): 사용자의 현재 빈도 밴드 범위로 먼저 좁혀서 시도하고,
-    # 콘텐츠가 부족해 후보가 없으면 밴드 제한 없이 폴백한다(fail-open, 기존 동작과 동일).
-    band = user["word_band"] or 0
-    min_rank, max_rank = word_frequency.band_range(band)
-    new_rows = await user_words_repo.get_new_words(
-        user["id"], level, new_limit, learning_mode=mode, min_rank=min_rank, max_rank=max_rank
-    )
-    band_source = "band"
-    if not new_rows:
-        new_rows = await user_words_repo.get_new_words(user["id"], level, new_limit, learning_mode=mode)
-        band_source = "no-band-fallback"
+    # 오늘의 주제 통합 학습(사용자 피드백): 신규 단어는 더 이상 순수 빈도밴드로만 뽑지 않고, 오늘의
+    # 주제 단어 풀에서만 채운다(해석/회화도 같은 풀을 공유) — 하루 상한(new_limit)과 word_band
+    # 승급/강등 추적(_record_word_band_attempt)은 그대로 유지, "어떤 단어를 보여줄지"만 주제가 정함.
+    topic, topic_word_rows = await _get_or_create_today_topic(user)
+    learned_ids = await user_words_repo.get_learned_word_ids(user["id"], [r["word_id"] for r in topic_word_rows])
+    new_rows = [r for r in topic_word_rows if r["word_id"] not in learned_ids][:new_limit]
 
-    # 선정 이유 로깅(디버깅용) — 복습(SRS)과 신규(빈도밴드)는 서로 다른 상한 규칙을 따르므로
+    # 선정 이유 로깅(디버깅용) — 복습(SRS)과 신규(오늘의 주제)는 서로 다른 상한 규칙을 따르므로
     # 절대 하나의 숫자로 합쳐서 세지 않는다: 복습은 due 전부, 신규는 daily_new_word_limit로 하드캡.
     logger.info(
-        "vocab-selection: user_id=%s 복습대상-SRS=%d 신규-frequency밴드%d(%s)=%d/%d(limit)",
-        user["id"], len(due_rows), band, band_source, len(new_rows), new_limit,
+        "vocab-selection: user_id=%s 복습대상-SRS=%d 신규-오늘의주제(%s)=%d/%d(limit)",
+        user["id"], len(due_rows), topic, len(new_rows), new_limit,
     )
 
     items = [
@@ -607,7 +601,7 @@ async def _build_vocab_queue(user) -> list[vocab_service.WordItem]:
         )
         for row in new_rows
     ]
-    return items
+    return topic, items
 
 
 def _word_card_text(item: vocab_service.WordItem) -> str:
@@ -660,7 +654,7 @@ async def _handle_word_pronunciation(telegram_id: str, chat_id: int, word_id: in
 
 
 async def _start_vocab_session(telegram_id: str, chat_id: int, user) -> bool:
-    items = await _build_vocab_queue(user)
+    topic, items = await _build_vocab_queue(user)
     if not items:
         await send_message(
             chat_id,
@@ -676,6 +670,7 @@ async def _start_vocab_session(telegram_id: str, chat_id: int, user) -> bool:
     # (둘을 섞어서 세면 사용자가 "신규 단어가 너무 많다"고 오인하게 되는 버그가 있었음).
     await send_message(
         chat_id,
+        f"오늘의 주제: {topic}\n"
         f"단어 학습을 시작합니다. 복습 {review_count}개 + 신규 {new_count}개 (총 {len(items)}개), "
         f"[아는단어]/[모르는단어]로 답해주세요.",
     )
@@ -701,8 +696,10 @@ async def _finish_vocab_word(telegram_id: str, chat_id: int, user) -> None:
 
     conversation_preview = conversation_service.pop_preview(telegram_id)
     if conversation_preview is not None:
-        # 회화 사전 단어학습(주제 단어 카드) 완료 — SRS 신규단어 수 자동조절/오늘의 학습 단어단계 완료 처리
-        # 대상이 아니라 여기서 바로 실제 회화 시작으로 넘어간다.
+        # 회화 사전 단어학습(오늘의 주제 단어 카드) 완료 — SRS 신규단어 수 자동조절(정답률 기반) 대상은
+        # 아니지만, 오늘의 주제 단어를 실제로 가르쳤으므로 "단어" 단계는 완료 처리한다(이후 같은 날
+        # /단어학습이나 /오늘의학습으로 다시 들어와도 같은 단어를 두 번 안 가르침).
+        await learning_sessions_repo.mark_stage_complete(user["id"], "vocab")
         await send_message(chat_id, "단어 학습 완료! 이제 오늘의 주제로 회화를 시작할게요...")
         started = await _begin_conversation(
             telegram_id,
@@ -743,8 +740,12 @@ async def _finish_vocab_word(telegram_id: str, chat_id: int, user) -> None:
 
     summary_text = _new_words_summary_text(summary.new_words)
 
+    # 오늘의 학습(M7) 체이닝 여부와 무관하게 항상 기록한다 — 오늘의 주제 통합 학습에서 이 값으로
+    # "단어를 이미 배웠는지"를 판단해(예: 회화가 카드를 두 번 안 가르치도록) 쓰기 때문에, 단독
+    # /단어학습 완료도 반드시 반영돼야 한다.
+    await learning_sessions_repo.mark_stage_complete(user["id"], "vocab")
+
     if today_session.is_active(telegram_id):
-        await learning_sessions_repo.mark_stage_complete(user["id"], "vocab")
         await send_message(chat_id, f"단어 학습 완료! {summary.reviewed}개 중 {summary.correct}개 성공{summary_text}")
         await _advance_today_session(telegram_id, chat_id, user)
         return
@@ -1130,15 +1131,62 @@ async def _advance_today_session(telegram_id: str, chat_id: int, user) -> None:
 READING_MAX_ATTEMPTS = reading_service.MAX_ATTEMPTS
 
 
+async def _get_or_generate_today_reading_passage(
+    user, topic: str, topic_word_rows: list[dict]
+) -> dict | None:
+    """오늘의 주제 통합 학습: 오늘의 단어 풀 + 숙달한 문법 범위로 지문을 하루 1회 생성하고
+    learning_sessions에 캐싱해, 같은 날 다시 /해석을 눌러도 같은 지문을 재사용한다."""
+    today_row = await learning_sessions_repo.get_today_row(user["id"])
+    cached_id = today_row.get("today_reading_passage_id") if today_row else None
+    if cached_id:
+        passage = await reading_repo.get_passage_by_id(cached_id)
+        if passage:
+            return passage
+
+    level = user["placement_level"] or "beginner"
+    mode = user["learning_mode"]
+    known_rows = await user_words_repo.get_known_topic_words(user["id"], topic, level, mode)
+    words = [r["word"] for r in topic_word_rows] + [r["word"] for r in known_rows]
+    if not words:
+        return None
+
+    # 문법은 이 주제 시스템과 무관하게 자기 순서(order_index+숙달기준)를 그대로 따르므로, 여기서는
+    # "이미 숙달한 문법 범위"만 상한선으로 참고한다(app/grammar/curriculum.py, 안 건드림).
+    mastered_topics = [t for t, _ in grammar_curriculum.GRAMMAR_CURRICULUM[: user["grammar_topic_index"] or 0]]
+    try:
+        passages = await content_generator.generate_reading_passage_for_words(
+            level, topic, words, mastered_topics, learning_mode=mode
+        )
+    except Exception:
+        logger.exception("today-topic reading passage generation failed")
+        return None
+    if not passages:
+        return None
+
+    passage_id = await content_repo.insert_reading_passage_returning_id(level, passages[0], learning_mode=mode)
+    await learning_sessions_repo.set_today_reading_passage(user["id"], passage_id)
+    logger.info(
+        "reading-selection: user_id=%s topic=%s word_pool=%d mastered_grammar=%d passage_id=%s",
+        user["id"], topic, len(words), len(mastered_topics), passage_id,
+    )
+    return await reading_repo.get_passage_by_id(passage_id)
+
+
 async def _start_reading_session(telegram_id: str, chat_id: int, user, is_review: bool) -> bool:
     level = user["placement_level"] or "beginner"
     mode = user["learning_mode"]
 
-    # 개인 맞춤 난이도(독해): 사용자의 현재 밴드로 먼저 시도하고, 후보가 없으면 밴드 없이 폴백.
-    band = user["reading_band"] or 0
-    row = await reading_repo.get_random_passage(level, learning_mode=mode, band=band)
+    topic, topic_word_rows = await _get_or_create_today_topic(user)
+    row = await _get_or_generate_today_reading_passage(user, topic, topic_word_rows)
+
     if row is None:
-        row = await reading_repo.get_random_passage(level, learning_mode=mode)
+        # 오늘의 주제 지문을 못 만들었으면(fail-open) 개인 맞춤 난이도(독해) 밴드 기반 무작위 지문으로
+        # 대체한다 — 사용자의 현재 밴드로 먼저 시도하고, 후보가 없으면 밴드 없이 폴백.
+        band = user["reading_band"] or 0
+        row = await reading_repo.get_random_passage(level, learning_mode=mode, band=band)
+        if row is None:
+            row = await reading_repo.get_random_passage(level, learning_mode=mode)
+
     if row is None:
         await send_message(
             chat_id,
@@ -1159,7 +1207,7 @@ async def _start_reading_session(telegram_id: str, chat_id: int, user, is_review
     label = "복습" if is_review else "해석 학습"
     await send_message(
         chat_id,
-        f"{label}을 시작합니다. 아래 지문을 읽고 한국어로 해석해서 보내주세요.\n\n{passage.text}",
+        f"오늘의 주제: {topic}\n{label}을 시작합니다. 아래 지문을 읽고 한국어로 해석해서 보내주세요.\n\n{passage.text}",
     )
     return True
 
@@ -1276,12 +1324,12 @@ async def _handle_conversation_difficulty_feedback(telegram_id: str, chat_id: in
     await send_message(chat_id, f"알겠어요! 다음 회화는 {conversation_difficulty.level_name(new_level)} 수준으로 진행할게요 🙂")
 
 
-TOPIC_WORD_TARGET = 8
-TOPIC_WORD_MIN = 5
+TOPIC_WORD_TARGET = 12  # 오늘의 주제 통합 학습: 단어학습(8~12개 요구사항)과 해석/회화가 이 풀을 공유
+TOPIC_WORD_MIN = 8
 
 
 async def _get_or_generate_topic_words(level: str, topic: str, learning_mode: str) -> list[dict]:
-    """회화 사전 단어학습: 콘텐츠뱅크에서 오늘의 주제 단어를 조회하고, 부족하면 최초 1회 생성 후 캐싱한다."""
+    """오늘의 주제 통합 학습: 콘텐츠뱅크에서 오늘의 주제 단어를 조회하고, 부족하면 최초 1회 생성 후 캐싱한다."""
     rows = await content_repo.get_topic_words(topic, level, learning_mode, TOPIC_WORD_TARGET)
     if len(rows) >= TOPIC_WORD_MIN:
         return rows
@@ -1289,15 +1337,60 @@ async def _get_or_generate_topic_words(level: str, topic: str, learning_mode: st
     try:
         generated = await content_generator.generate_topic_words(level, topic, TOPIC_WORD_TARGET, learning_mode)
     except Exception:
-        logger.exception("conversation topic word generation failed")
+        logger.exception("topic word generation failed")
         return rows
 
     if generated:
         await content_repo.insert_words(level, generated, learning_mode)
         word_ids = await content_repo.get_word_ids([w["word"] for w in generated], learning_mode)
-        await content_repo.insert_conversation_topic_words(topic, level, learning_mode, list(word_ids.values()))
+        await content_repo.insert_topic_words(topic, level, learning_mode, list(word_ids.values()))
         rows = await content_repo.get_topic_words(topic, level, learning_mode, TOPIC_WORD_TARGET)
     return rows
+
+
+async def _get_or_create_today_topic(user) -> tuple[str, list[dict]]:
+    """오늘의 주제 통합 학습: 단어학습/해석/회화가 공유하는 "오늘의 주제 + 핵심 단어 풀"을 하루
+    1회만 정하고(learning_sessions에 캐싱), 이후 같은 날 재호출되면 그대로 재사용한다."""
+    await learning_sessions_repo.start_today(user["id"])
+    row = await learning_sessions_repo.get_today_row(user["id"])
+    level = user["placement_level"] or "beginner"
+    mode = user["learning_mode"]
+
+    if row and row.get("today_topic"):
+        word_ids = list(row.get("today_topic_word_ids") or [])
+        word_rows = await content_repo.get_words_by_ids(word_ids) if word_ids else []
+        return row["today_topic"], word_rows
+
+    recent_topics = await learning_sessions_repo.get_recent_topics(user["id"], daily_topics.AVOID_RECENT_DAYS)
+    topic = daily_topics.pick_topic(user.get("target_use_case"), recent_topics)
+
+    word_rows = await _get_or_generate_topic_words(level, topic, mode)
+    word_ids = [r["word_id"] for r in word_rows]
+    await learning_sessions_repo.set_today_topic(user["id"], topic, word_ids)
+    logger.info("topic-selection: user_id=%s topic=%s word_count=%d", user["id"], topic, len(word_rows))
+    return topic, word_rows
+
+
+def _topic_word_items(word_rows: list[dict], learning_mode: str) -> list[vocab_service.WordItem]:
+    return [
+        vocab_service.WordItem(
+            word_id=row["word_id"],
+            word=row["word"],
+            meaning_ko=row["meaning_ko"],
+            pronunciation=row["pronunciation"],
+            example_sentence=row["example_sentence"],
+            example_translation=row["example_translation"],
+            level=row["level"],
+            ease=srs.INITIAL_EASE,
+            interval_days=srs.INITIAL_INTERVAL_DAYS,
+            is_new=True,
+            learning_mode=learning_mode,
+            mnemonic=row.get("mnemonic"),
+            example_sentences=row.get("example_sentences"),
+            emoji=row.get("emoji"),
+        )
+        for row in word_rows
+    ]
 
 
 async def _start_conversation_session(telegram_id: str, chat_id: int, user) -> bool:
@@ -1311,41 +1404,27 @@ async def _start_conversation_session(telegram_id: str, chat_id: int, user) -> b
         return False
 
     level = user["placement_level"] or "beginner"
-    topic_index = user["conversation_topic_index"] or 0
-    topic = conversation_topics.pick_today_topic(topic_index, user.get("target_use_case"))
-    await users_repo.set_conversation_topic_index(
-        telegram_id, (topic_index + 1) % conversation_topics.topic_count()
-    )
+    topic, word_rows = await _get_or_create_today_topic(user)
 
-    word_rows = await _get_or_generate_topic_words(level, topic, user["learning_mode"])
-    if not word_rows:
-        # 주제 단어를 준비하지 못해도 회화 자체는 막지 않는다(fail-open) — 사전학습 없이 바로 시작.
-        return await _begin_conversation(telegram_id, chat_id, user, level, topic, [])
+    today_row = await learning_sessions_repo.get_today_row(user["id"])
+    stages_done = (today_row.get("stages_completed") if today_row else None) or []
+    vocab_already_taught = "vocab" in stages_done
 
-    items = [
-        vocab_service.WordItem(
-            word_id=row["word_id"],
-            word=row["word"],
-            meaning_ko=row["meaning_ko"],
-            pronunciation=row["pronunciation"],
-            example_sentence=row["example_sentence"],
-            example_translation=row["example_translation"],
-            level=row["level"],
-            ease=srs.INITIAL_EASE,
-            interval_days=srs.INITIAL_INTERVAL_DAYS,
-            is_new=True,
-            learning_mode=user["learning_mode"],
+    if not vocab_already_taught and word_rows:
+        # 오늘의 주제 단어를 아직 안 배웠으면(단어학습을 거치지 않고 곧바로 /회화로 온 경우) 회화
+        # 시작 전에 카드로 먼저 가르친다 — 이미 배웠다면(단어학습을 먼저 했다면) 같은 단어를 두 번
+        # 가르치지 않고 곧바로 회화로 들어간다(사용자 요청: "두 번 따로 만들 필요 없음").
+        items = _topic_word_items(word_rows, user["learning_mode"])
+        conversation_service.start_preview(telegram_id, level, topic, word_rows)
+        first = vocab_service.start_session(telegram_id, items)
+        await send_message(
+            chat_id,
+            f"💬 오늘의 대화 주제는 '{topic}'입니다. 먼저 핵심 단어 {len(items)}개부터 배워볼까요?",
         )
-        for row in word_rows
-    ]
-    conversation_service.start_preview(telegram_id, level, topic, word_rows)
-    first = vocab_service.start_session(telegram_id, items)
-    await send_message(
-        chat_id,
-        f"💬 오늘의 회화 주제는 '{topic}'입니다. 먼저 핵심 단어 {len(items)}개부터 배워볼까요?",
-    )
-    await _send_word_card(chat_id, first)
-    return True
+        await _send_word_card(chat_id, first)
+        return True
+
+    return await _begin_conversation(telegram_id, chat_id, user, level, topic, word_rows)
 
 
 async def _begin_conversation(

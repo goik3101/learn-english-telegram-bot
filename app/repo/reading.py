@@ -46,6 +46,18 @@ async def get_random_passage(level: str, learning_mode: str = "GENERAL", band: O
             return await cur.fetchone()
 
 
+async def get_passage_by_id(passage_id: int) -> Optional[dict[str, Any]]:
+    """오늘의 주제 통합 학습: 하루 동안 같은(오늘의 주제 제약으로 생성된) 지문을 재사용할 때 조회."""
+    pool = get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "select id, level, passage_text, model_translation_ko, difficulty_band from reading_passages where id = %s",
+                (passage_id,),
+            )
+            return await cur.fetchone()
+
+
 async def get_recent_band_results(user_id: int, band: int, limit: int) -> list[bool]:
     """해당 밴드 지문에 대한 최근 첫 시도(attempt_number=1) 적절 여부 — 밴드 승급/강등 판단용."""
     pool = get_pool()

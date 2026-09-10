@@ -1,6 +1,12 @@
 from app.handlers import router
 from tests.test_router import FakeUsersRepo, run
-from tests.test_vocab_flow import FakeUserWordsRepo, _setup_general_user, _word_row
+from tests.test_vocab_flow import (
+    FakeContentGenerator,
+    FakeLearningSessionsRepo,
+    FakeUserWordsRepo,
+    _setup_general_user,
+    _word_row,
+)
 
 
 class FakeConversationRepo:
@@ -48,6 +54,9 @@ class FakeContentRepo:
     async def get_topic_words(self, topic, level, learning_mode, limit):
         return self.topic_word_rows[:limit]
 
+    async def get_words_by_ids(self, word_ids):
+        return [r for r in self.topic_word_rows if r["word_id"] in word_ids]
+
     async def insert_words(self, level, words, learning_mode="GENERAL"):
         self.inserted_words.append((level, words))
         return len(words)
@@ -59,7 +68,7 @@ class FakeContentRepo:
             self._next_id += 1
         return ids
 
-    async def insert_conversation_topic_words(self, topic, level, learning_mode, word_ids):
+    async def insert_topic_words(self, topic, level, learning_mode, word_ids):
         self.linked.append((topic, level, learning_mode, word_ids))
         self.topic_word_rows = [
             _word_row(word_id, f"word{word_id}", f"뜻{word_id}") for word_id in word_ids
@@ -70,7 +79,8 @@ class FakeContentRepo:
 
 
 def _default_topic_words():
-    return [_word_row(200 + i, f"topicword{i}", f"주제단어{i}") for i in range(5)]
+    # TOPIC_WORD_MIN(8) 이상으로 줘서 AI 생성 폴백 경로를 타지 않게 한다.
+    return [_word_row(200 + i, f"topicword{i}", f"주제단어{i}") for i in range(8)]
 
 
 def _wire(monkeypatch, already_done=False, topic_word_rows=None):
@@ -78,10 +88,13 @@ def _wire(monkeypatch, already_done=False, topic_word_rows=None):
     fake_conversation = FakeConversationRepo(already_done=already_done)
     fake_content = FakeContentRepo(topic_word_rows=topic_word_rows)
     fake_user_words = FakeUserWordsRepo()
+    fake_learning_sessions = FakeLearningSessionsRepo()
     monkeypatch.setattr(router, "users_repo", fake_users)
     monkeypatch.setattr(router, "conversation_repo", fake_conversation)
     monkeypatch.setattr(router, "content_repo", fake_content)
     monkeypatch.setattr(router, "user_words_repo", fake_user_words)
+    monkeypatch.setattr(router, "learning_sessions_repo", fake_learning_sessions)
+    monkeypatch.setattr(router, "content_generator", FakeContentGenerator())
     monkeypatch.setattr(router, "db_available", lambda: True)
 
     sent: list[tuple] = []
@@ -143,7 +156,7 @@ def test_admin_bypasses_daily_limit(monkeypatch):
 
     run(router.handle_update({"message": {"chat": {"id": 1104}, "text": "/회화"}}))
     # 하루 1회 제한과 무관하게, 먼저 오늘의 주제 단어카드부터 시작된다.
-    assert any("오늘의 회화 주제" in m[1] for m in sent)
+    assert any("오늘의 대화 주제" in m[1] for m in sent)
 
     sent.clear()
     _complete_topic_word_preview(1104, fake_content.topic_word_rows)
@@ -174,7 +187,7 @@ def test_conversation_starts_with_topic_word_preview_then_runs_five_turns(monkey
 
     run(router.handle_update({"message": {"chat": {"id": 1102}, "text": "/회화"}}))
     # 회화가 아니라 먼저 오늘의 주제 단어카드가 나온다.
-    assert "오늘의 회화 주제" in sent[-2][1] or "오늘의 회화 주제" in sent[-1][1]
+    assert "오늘의 대화 주제" in sent[-2][1] or "오늘의 대화 주제" in sent[-1][1]
     assert fake_conversation.sessions == {}  # 아직 실제 회화 세션은 시작되지 않음
 
     sent.clear()
@@ -295,4 +308,4 @@ def test_conversation_generates_and_caches_topic_words_when_missing(monkeypatch)
 
     assert fake_content.inserted_words  # 생성된 단어가 콘텐츠뱅크에 저장됨
     assert fake_content.linked  # 주제와 연결됨
-    assert any("오늘의 회화 주제" in m[1] for m in sent)
+    assert any("오늘의 대화 주제" in m[1] for m in sent)

@@ -28,7 +28,6 @@ class FakeUsersRepo:
             "grammar_topic_index": 0,
             "reading_band": 0,
             "conversation_level": 2,
-            "conversation_topic_index": 0,
             "target_use_case": None,
             "child_stage": 0,
             "created_at": "now",
@@ -68,9 +67,6 @@ class FakeUsersRepo:
 
     async def set_conversation_level(self, telegram_id, level):
         self.users[telegram_id]["conversation_level"] = level
-
-    async def set_conversation_topic_index(self, telegram_id, index):
-        self.users[telegram_id]["conversation_topic_index"] = index
 
     async def touch_last_active(self, telegram_id):
         pass

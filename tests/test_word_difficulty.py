@@ -2,7 +2,14 @@ from app import difficulty
 from app.handlers import router
 from app.vocab import frequency as word_frequency
 from tests.test_router import FakeUsersRepo, run
-from tests.test_vocab_flow import FakeUserWordsRepo, _setup_general_user, _word_row
+from tests.test_vocab_flow import (
+    FakeContentGenerator,
+    FakeContentRepo,
+    FakeLearningSessionsRepo,
+    FakeUserWordsRepo,
+    _setup_general_user,
+    _word_row,
+)
 
 
 def test_band_range_returns_expected_boundaries():
@@ -55,6 +62,9 @@ def _wire(monkeypatch, new_rows=None):
     fake_user_words = FakeUserWordsRepo(new_rows=new_rows)
     monkeypatch.setattr(router, "users_repo", fake_users)
     monkeypatch.setattr(router, "user_words_repo", fake_user_words)
+    monkeypatch.setattr(router, "learning_sessions_repo", FakeLearningSessionsRepo())
+    monkeypatch.setattr(router, "content_repo", FakeContentRepo(topic_word_rows=new_rows))
+    monkeypatch.setattr(router, "content_generator", FakeContentGenerator())
     monkeypatch.setattr(router, "db_available", lambda: True)
 
     sent: list[tuple] = []
@@ -129,6 +139,9 @@ def test_word_band_does_not_change_for_due_review_words(monkeypatch):
     fake_user_words = FakeUserWordsRepo(due_rows=due_rows)
     monkeypatch.setattr(router, "users_repo", fake_users)
     monkeypatch.setattr(router, "user_words_repo", fake_user_words)
+    monkeypatch.setattr(router, "learning_sessions_repo", FakeLearningSessionsRepo())
+    monkeypatch.setattr(router, "content_repo", FakeContentRepo())
+    monkeypatch.setattr(router, "content_generator", FakeContentGenerator())
     monkeypatch.setattr(router, "db_available", lambda: True)
 
     async def fake_send(chat_id, text, reply_markup=None, parse_mode=None):
@@ -153,23 +166,30 @@ def test_word_band_does_not_change_for_due_review_words(monkeypatch):
     assert fake_user_words.word_attempts == []  # 복습 단어는 밴드 통계 대상이 아님
 
 
-def test_vocab_queue_falls_back_when_band_has_no_candidates(monkeypatch):
-    # get_new_words가 밴드 필터(1차 호출)에서는 빈 목록을, 폴백(2차 호출, min_rank=None)에서는
-    # 결과를 주는 상황을 시뮬레이션한다.
-    calls: list[tuple] = []
-    fallback_rows = [_word_row(999, "fallback", "폴백")]
-
-    class FallbackRepo(FakeUserWordsRepo):
-        async def get_new_words(self, user_id, level, limit, learning_mode="GENERAL", min_rank=None, max_rank=None):
-            calls.append((min_rank, max_rank))
-            if min_rank is not None:
-                return []
-            return fallback_rows[:limit]
-
+def test_vocab_session_fails_open_when_topic_word_generation_fails(monkeypatch):
+    """오늘의 주제 통합 학습으로 바뀌면서 "밴드 필터 실패 시 폴백" 개념은 사라지고, 대신 "오늘의
+    주제 단어 생성 자체가 실패해도 크래시 없이(신규 0개로) 세션은 진행돼야 한다"가 그 자리를
+    대신한다(due-review 단어가 있으면 그것만으로도 세션은 시작됨)."""
+    due_rows = [
+        {
+            "word_id": 960,
+            "word": "review",
+            "meaning_ko": "복습",
+            "pronunciation": "/rɪˈvjuː/",
+            "example_sentence": "Time to review.",
+            "example_translation": "복습할 시간.",
+            "level": "beginner",
+            "ease": 1.7,
+            "interval_days": 2,
+        }
+    ]
     fake_users = FakeUsersRepo()
-    fake_user_words = FallbackRepo()
+    fake_user_words = FakeUserWordsRepo(due_rows=due_rows)  # new_rows 없음 -> 오늘의 주제 단어 0개
     monkeypatch.setattr(router, "users_repo", fake_users)
     monkeypatch.setattr(router, "user_words_repo", fake_user_words)
+    monkeypatch.setattr(router, "learning_sessions_repo", FakeLearningSessionsRepo())
+    monkeypatch.setattr(router, "content_repo", FakeContentRepo(topic_word_rows=[]))
+    monkeypatch.setattr(router, "content_generator", FakeContentGenerator())
     monkeypatch.setattr(router, "db_available", lambda: True)
 
     sent: list[tuple] = []
@@ -184,7 +204,4 @@ def test_vocab_queue_falls_back_when_band_has_no_candidates(monkeypatch):
 
     run(router.handle_update({"message": {"chat": {"id": 8004}, "text": "/단어학습"}}))
 
-    assert len(calls) == 2
-    assert calls[0][0] is not None  # 1차: 밴드 필터
-    assert calls[1] == (None, None)  # 2차: 폴백(필터 없음)
-    assert "fallback" in sent[-1][1]
+    assert "review" in sent[-1][1]  # 크래시 없이 복습 단어 카드로 정상 시작됨

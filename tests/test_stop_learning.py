@@ -3,7 +3,14 @@ from app.vocab import service as vocab_service
 from tests.test_grammar_difficulty import FakeGrammarRepo, _setup_general_user as _setup_grammar_user
 from tests.test_grammar_flow import _question_row
 from tests.test_router import FakeUsersRepo, run
-from tests.test_vocab_flow import FakeUserWordsRepo, _setup_general_user, _word_row
+from tests.test_vocab_flow import (
+    FakeContentGenerator,
+    FakeContentRepo,
+    FakeLearningSessionsRepo,
+    FakeUserWordsRepo,
+    _setup_general_user,
+    _word_row,
+)
 
 
 def _wire_vocab(monkeypatch, new_rows=None):
@@ -11,6 +18,9 @@ def _wire_vocab(monkeypatch, new_rows=None):
     fake_user_words = FakeUserWordsRepo(new_rows=new_rows)
     monkeypatch.setattr(router, "users_repo", fake_users)
     monkeypatch.setattr(router, "user_words_repo", fake_user_words)
+    monkeypatch.setattr(router, "learning_sessions_repo", FakeLearningSessionsRepo())
+    monkeypatch.setattr(router, "content_repo", FakeContentRepo(topic_word_rows=new_rows))
+    monkeypatch.setattr(router, "content_generator", FakeContentGenerator())
     monkeypatch.setattr(router, "db_available", lambda: True)
 
     sent: list[tuple] = []

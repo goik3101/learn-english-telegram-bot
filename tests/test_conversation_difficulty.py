@@ -2,7 +2,7 @@ from app.conversation import difficulty as conversation_difficulty
 from app.handlers import router
 from tests.test_conversation_flow import FakeContentRepo, _complete_topic_word_preview
 from tests.test_router import FakeUsersRepo, run
-from tests.test_vocab_flow import FakeUserWordsRepo
+from tests.test_vocab_flow import FakeContentGenerator, FakeLearningSessionsRepo, FakeUserWordsRepo
 
 
 def test_tokenize_lowercases_and_strips_punctuation():
@@ -91,6 +91,8 @@ def _wire(monkeypatch):
     monkeypatch.setattr(router, "conversation_repo", fake_conversation)
     monkeypatch.setattr(router, "content_repo", fake_content)
     monkeypatch.setattr(router, "user_words_repo", fake_user_words)
+    monkeypatch.setattr(router, "learning_sessions_repo", FakeLearningSessionsRepo())
+    monkeypatch.setattr(router, "content_generator", FakeContentGenerator())
     monkeypatch.setattr(router, "db_available", lambda: True)
 
     sent: list[tuple] = []

@@ -65,15 +65,6 @@ async def set_conversation_level(telegram_id: str, level: int) -> None:
             await cur.execute("update users set conversation_level = %s where telegram_id = %s", (level, telegram_id))
 
 
-async def set_conversation_topic_index(telegram_id: str, index: int) -> None:
-    pool = get_pool()
-    async with pool.connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "update users set conversation_topic_index = %s where telegram_id = %s", (index, telegram_id)
-            )
-
-
 async def set_reading_band(telegram_id: str, band: int) -> None:
     pool = get_pool()
     async with pool.connection() as conn:

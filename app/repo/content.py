@@ -191,8 +191,9 @@ async def insert_reading_passages(level: str, passages: list[dict], learning_mod
     return inserted
 
 
-async def insert_conversation_topic_words(topic: str, level: str, learning_mode: str, word_ids: list[int]) -> None:
-    """회화 사전 단어학습: 생성된 단어들을 words에 합류시킨 뒤(insert_words), 그 id들을 주제와 연결한다."""
+async def insert_topic_words(topic: str, level: str, learning_mode: str, word_ids: list[int]) -> None:
+    """오늘의 주제 통합 학습(단어/해석/회화 공유): 생성된 단어들을 words에 합류시킨 뒤(insert_words),
+    그 id들을 주제와 연결한다."""
     if not word_ids:
         return
 
@@ -202,7 +203,7 @@ async def insert_conversation_topic_words(topic: str, level: str, learning_mode:
             for word_id in word_ids:
                 await cur.execute(
                     """
-                    insert into conversation_topic_words (topic, level, learning_mode, word_id)
+                    insert into topic_words (topic, level, learning_mode, word_id)
                     values (%s, %s, %s, %s)
                     on conflict (topic, level, learning_mode, word_id) do nothing
                     """,
@@ -219,15 +220,65 @@ async def get_topic_words(topic: str, level: str, learning_mode: str, limit: int
                 select w.id as word_id, w.word, w.meaning_ko, w.pronunciation,
                        w.example_sentence, w.example_translation, w.level,
                        w.mnemonic, w.example_sentences, w.emoji
-                from conversation_topic_words ctw
-                join words w on w.id = ctw.word_id
-                where ctw.topic = %s and ctw.level = %s and ctw.learning_mode = %s
+                from topic_words tw
+                join words w on w.id = tw.word_id
+                where tw.topic = %s and tw.level = %s and tw.learning_mode = %s
                 order by random()
                 limit %s
                 """,
                 (topic, level, learning_mode, limit),
             )
             return await cur.fetchall()
+
+
+async def get_words_by_ids(word_ids: list[int]) -> list[dict]:
+    """오늘의 주제 통합 학습: learning_sessions.today_topic_word_ids로 저장해둔 오늘의 단어 풀을
+    다시 조회할 때 사용(해석/회화가 같은 풀을 참조)."""
+    if not word_ids:
+        return []
+    pool = get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                select id as word_id, word, meaning_ko, pronunciation, example_sentence, example_translation,
+                       level, mnemonic, example_sentences, emoji
+                from words
+                where id = any(%s)
+                """,
+                (word_ids,),
+            )
+            return await cur.fetchall()
+
+
+async def insert_reading_passage_returning_id(level: str, passage: dict, learning_mode: str = "GENERAL") -> int:
+    """오늘의 주제 통합 학습: 하루 1회, 오늘의 단어 풀 제약으로 생성한 지문을 넣고 id를 바로 받는다
+    (bulk용 insert_reading_passages와 달리, learning_sessions.today_reading_passage_id로 캐싱하려면
+    id가 필요하다)."""
+    pool = get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                insert into reading_passages
+                    (level, passage_text, model_translation_ko, learning_mode,
+                     avg_sentence_length, vocab_level, grammar_complexity, difficulty_band)
+                values (%s, %s, %s, %s, %s, %s, %s, %s)
+                returning id
+                """,
+                (
+                    level,
+                    passage["passage"],
+                    passage["model_translation_ko"],
+                    learning_mode,
+                    passage.get("avg_sentence_length"),
+                    passage.get("vocab_level"),
+                    passage.get("grammar_complexity"),
+                    passage.get("difficulty_band"),
+                ),
+            )
+            row = await cur.fetchone()
+            return row["id"]
 
 
 async def count_words_by_level() -> dict[str, int]:

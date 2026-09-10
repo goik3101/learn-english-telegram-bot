@@ -3,7 +3,13 @@ from tests.test_conversation_flow import FakeConversationRepo
 from tests.test_grammar_flow import FakeGrammarRepo, _question_row
 from tests.test_reading_flow import FakeReadingRepo, _passage_row
 from tests.test_router import FakeUsersRepo, run
-from tests.test_vocab_flow import FakeUserWordsRepo, _setup_general_user, _word_row
+from tests.test_vocab_flow import (
+    FakeContentGenerator,
+    FakeContentRepo,
+    FakeUserWordsRepo,
+    _setup_general_user,
+    _word_row,
+)
 
 
 class FakeLearningSessionsRepo:
@@ -12,9 +18,14 @@ class FakeLearningSessionsRepo:
         self.stages_completed: list[tuple[int, str]] = []
         self.completed: list[int] = []
         self.ai_call_count = 0
+        self.topics: dict[int, str] = {}
+        self.topic_word_ids: dict[int, list[int]] = {}
+        self.reading_passage_ids: dict[int, int] = {}
 
     async def start_today(self, user_id):
-        self.started.append(user_id)
+        # 실제 DB는 on conflict do nothing이라 멱등 — 같은 날 여러 번 호출돼도 한 번만 기록되어야 한다.
+        if user_id not in self.started:
+            self.started.append(user_id)
 
     async def mark_stage_complete(self, user_id, stage):
         self.stages_completed.append((user_id, stage))
@@ -24,6 +35,24 @@ class FakeLearningSessionsRepo:
 
     async def mark_completed(self, user_id):
         self.completed.append(user_id)
+
+    async def get_today_row(self, user_id):
+        return {
+            "stages_completed": [s for uid, s in self.stages_completed if uid == user_id],
+            "today_topic": self.topics.get(user_id),
+            "today_topic_word_ids": self.topic_word_ids.get(user_id, []),
+            "today_reading_passage_id": self.reading_passage_ids.get(user_id),
+        }
+
+    async def set_today_topic(self, user_id, topic, word_ids):
+        self.topics[user_id] = topic
+        self.topic_word_ids[user_id] = word_ids
+
+    async def set_today_reading_passage(self, user_id, passage_id):
+        self.reading_passage_ids[user_id] = passage_id
+
+    async def get_recent_topics(self, user_id, days):
+        return []
 
 
 def _wire(
@@ -55,6 +84,8 @@ def _wire(
     monkeypatch.setattr(router, "learning_sessions_repo", fake_sessions)
     monkeypatch.setattr(router, "reading_repo", fake_reading)
     monkeypatch.setattr(router, "conversation_repo", fake_conversation)
+    monkeypatch.setattr(router, "content_repo", FakeContentRepo(topic_word_rows=new_rows))
+    monkeypatch.setattr(router, "content_generator", FakeContentGenerator())
     monkeypatch.setattr(router, "db_available", lambda: True)
 
     sent: list[tuple] = []

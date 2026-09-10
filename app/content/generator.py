@@ -445,3 +445,62 @@ async def generate_reading_passages(level: str, count: int, learning_mode: str =
     if len(valid) < len(items):
         logger.warning("dropped %d malformed reading items", len(items) - len(valid))
     return valid
+
+
+# 오늘의 주제 통합 학습(사용자 피드백): 해석 지문이 단어학습/회화와 무관하게 생성되다 보니 학습자
+# 수준과 동떨어진 학술 어휘("algorithmic accountability" 등)로 새는 문제가 있었다. 지문을 오늘의
+# 주제 단어 풀 위주로만 구성하도록 제약하는 전용 프롬프트.
+_TOPIC_READING_PROMPT_TEMPLATE = """너는 영어 학습 콘텐츠 제작자다. {level}({level_desc}) 난이도의 영어 짧은 지문(3~5문장) 1개를
+아래 조건에 맞춰 만들어라.
+
+주제: {topic}
+이 지문에서 우선적으로 사용해야 할 단어 목록(가능한 한 이 목록 위주로 문장을 구성할 것): {words}
+{grammar_note}
+- 위 단어 목록에 없는 단어가 꼭 필요하면 최소한으로만 쓰고, 그런 경우 지문 안에서 그 단어 바로
+  뒤에 괄호로 쉬운 한국어 뜻을 함께 적어라(예: "The trip was exhausting(매우 피곤한).").
+- 자연스러운 한국어 모범 번역도 함께 제공하라.
+- 또한 아래 난이도 메타데이터를 함께 매겨라:
+  avg_sentence_length(평균 문장당 단어 수, 정수), vocab_level("basic"/"intermediate"/"advanced" 중 하나),
+  grammar_complexity(포함된 문법 구조 간단 설명), difficulty_band(0~5 정수).
+{tone_note}아래 JSON 배열 형식으로만 응답하고, 다른 설명은 절대 추가하지 마라(배열 안에 지문 1개만).
+[
+  {{
+    "passage": "영어 지문 (3~5문장, 하나의 완결된 글)",
+    "model_translation_ko": "지문 전체를 자연스럽게 옮긴 한국어 모범 번역",
+    "avg_sentence_length": 10,
+    "vocab_level": "basic",
+    "grammar_complexity": "단순 현재/과거 시제",
+    "difficulty_band": 1
+  }}
+]"""
+
+
+async def generate_reading_passage_for_words(
+    level: str,
+    topic: str,
+    words: list[str],
+    mastered_grammar_topics: list[str],
+    learning_mode: str = "GENERAL",
+) -> list[dict]:
+    """오늘의 주제 통합 학습: 오늘의 단어 풀 + 이미 숙달한 문법 범위 안에서만 지문을 생성한다
+    (하루 1회, app/handlers/router.py에서 learning_sessions에 캐싱해 재사용)."""
+    grammar_note = (
+        f"- 문장 구조는 학습자가 이미 배운 다음 문법 범위를 넘지 않게 하라: {', '.join(mastered_grammar_topics)}. "
+        "아직 배우지 않은 더 어려운 문법 구조(예: 가정법, 도치구문 등 위 목록에 없는 것)는 쓰지 마라.\n"
+        if mastered_grammar_topics
+        else "- 문장 구조는 최대한 단순하게(기초 문법 범위 안에서) 유지하라.\n"
+    )
+    prompt = _TOPIC_READING_PROMPT_TEMPLATE.format(
+        level=level,
+        level_desc=LEVEL_DESCRIPTIONS[level],
+        topic=topic,
+        words=", ".join(words),
+        grammar_note=grammar_note,
+        tone_note=tone_note(learning_mode),
+    )
+    raw = await generate_json(prompt)
+    items = _parse_json_array(raw)
+    valid = [item for item in items if _is_valid_reading(item)]
+    if len(valid) < len(items):
+        logger.warning("dropped %d malformed topic reading items for topic %s", len(items) - len(valid), topic)
+    return valid
