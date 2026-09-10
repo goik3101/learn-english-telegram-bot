@@ -17,6 +17,7 @@ class WordItem:
     mnemonic: str | None = None
     example_sentences: list[dict] | None = None  # [{"sentence":..,"translation":..}, ...] — 복습회차마다 다른 예문
     review_count: int = 0
+    emoji: str | None = None
 
 
 def pick_example(item: WordItem) -> tuple[str | None, str | None]:
@@ -33,7 +34,7 @@ def pick_example(item: WordItem) -> tuple[str | None, str | None]:
 class VocabSession:
     queue: list[WordItem]
     index: int = 0
-    stage: str = "recall"  # "recall"(뜻 추측) | "card"(정답 공개) | "mcq" | "subjective"
+    stage: str = "card"  # "card" | "mcq" | "subjective"
     mcq_choices: list[str] = field(default_factory=list)
     mcq_correct_index: int = 0
     reviewed: int = 0
@@ -64,11 +65,6 @@ def current_item(telegram_id: str) -> WordItem | None:
 def current_stage(telegram_id: str) -> str | None:
     session = _sessions.get(telegram_id)
     return session.stage if session else None
-
-
-def enter_card_stage(telegram_id: str) -> None:
-    """능동적 상기(active recall): 뜻을 추측해본 뒤에야 정답 카드를 공개하는 단계로 넘어간다."""
-    _sessions[telegram_id].stage = "card"
 
 
 def enter_mcq_stage(telegram_id: str, choices: list[str], correct_index: int) -> None:
@@ -107,7 +103,7 @@ def advance(telegram_id: str) -> WordItem | None:
     if current is not None and current.is_new:
         session.new_words_seen.append((current.word, current.meaning_ko))
     session.index += 1
-    session.stage = "recall"
+    session.stage = "card"
     return current_item(telegram_id)
 
 

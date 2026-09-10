@@ -201,14 +201,20 @@ def test_conversation_starts_with_topic_word_preview_then_runs_five_turns(monkey
 
 
 def test_conversation_ai_failure_does_not_break_flow(monkeypatch):
+    """버그리포트: 실패 시 고정 "Sorry, I had trouble..." 문구가 실제 턴처럼 반복 저장되던 버그.
+    이제는 1회 재시도 후에도 실패하면 정확한 안내만 보내고, 턴/히스토리는 건드리지 않아야 한다."""
     fake_users, fake_conversation, fake_content, sent = _wire(monkeypatch)
     telegram_id = "1103"
     _setup_general_user(fake_users, telegram_id)
+
+    call_count = 0
 
     async def failing_reply(
         level, history, user_message, learning_mode="GENERAL", conversation_level=2,
         extra_instruction="", topic=None, preview_words=None,
     ):
+        nonlocal call_count
+        call_count += 1
         raise RuntimeError("boom")
 
     monkeypatch.setattr(router.conversation_chat, "generate_opening", _fake_opening)
@@ -219,7 +225,47 @@ def test_conversation_ai_failure_does_not_break_flow(monkeypatch):
     sent.clear()
     run(router.handle_update({"message": {"chat": {"id": 1103}, "text": "hi there"}}))
 
-    assert sent  # 뭔가 응답은 옴 (대화가 끊기지 않음)
+    assert call_count == 2  # 1회 재시도까지 했음
+    assert "일시적으로 응답이 어렵습니다" in sent[-1][1]
+    assert "Sorry, I had trouble" not in sent[-1][1]
+    # 실패한 턴은 세션/DB에 실제 AI 턴으로 저장되면 안 된다 — model 메시지는 오프닝 1개뿐이어야 함.
+    model_messages = [content for _, role, content in fake_conversation.messages if role == "model"]
+    assert len(model_messages) == 1
+    session = list(fake_conversation.sessions.values())[0]
+    assert session["completed"] is False
+
+    session_obj = router.conversation_service.get_session(telegram_id)
+    assert session_obj is not None
+    assert len(session_obj.history) == 1  # 오프닝만 있고, 실패한 턴은 히스토리에 추가로 안 쌓임
+
+
+def test_conversation_reply_recovers_after_transient_failure(monkeypatch):
+    """1차 시도만 실패하고 2차(재시도)에서 성공하면 정상 응답으로 이어져야 한다."""
+    fake_users, fake_conversation, fake_content, sent = _wire(monkeypatch)
+    telegram_id = "1108"
+    _setup_general_user(fake_users, telegram_id)
+
+    attempts = {"n": 0}
+
+    async def flaky_reply(
+        level, history, user_message, learning_mode="GENERAL", conversation_level=2,
+        extra_instruction="", topic=None, preview_words=None,
+    ):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise RuntimeError("transient")
+        return "Glad you're here! What's next?"
+
+    monkeypatch.setattr(router.conversation_chat, "generate_opening", _fake_opening)
+    monkeypatch.setattr(router.conversation_chat, "generate_reply", flaky_reply)
+
+    run(router.handle_update({"message": {"chat": {"id": 1108}, "text": "/회화"}}))
+    _complete_topic_word_preview(1108, fake_content.topic_word_rows)
+    sent.clear()
+    run(router.handle_update({"message": {"chat": {"id": 1108}, "text": "hi there"}}))
+
+    assert attempts["n"] == 2
+    assert "Glad you're here" in sent[-1][1]
 
 
 def test_conversation_generates_and_caches_topic_words_when_missing(monkeypatch):

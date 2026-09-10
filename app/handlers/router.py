@@ -362,10 +362,6 @@ async def _handle_callback_query(callback_query: dict) -> None:
         await _handle_placement_answer(telegram_id, chat_id, parts[1], int(parts[2]))
         return
 
-    if parts[0] == "vocab" and len(parts) == 3 and parts[1] == "reveal":
-        await _handle_word_reveal(telegram_id, chat_id, int(parts[2]))
-        return
-
     if parts[0] == "vocab" and len(parts) == 3 and parts[1] in ("known", "unknown"):
         word_id = int(parts[2])
         if parts[1] == "known":
@@ -588,6 +584,7 @@ async def _build_vocab_queue(user) -> list[vocab_service.WordItem]:
             mnemonic=row.get("mnemonic"),
             example_sentences=row.get("example_sentences"),
             review_count=row.get("review_count") or 0,
+            emoji=row.get("emoji"),
         )
         for row in due_rows
     ]
@@ -606,23 +603,19 @@ async def _build_vocab_queue(user) -> list[vocab_service.WordItem]:
             learning_mode=mode,
             mnemonic=row.get("mnemonic"),
             example_sentences=row.get("example_sentences"),
+            emoji=row.get("emoji"),
         )
         for row in new_rows
     ]
     return items
 
 
-def _word_recall_prompt_text(item: vocab_service.WordItem) -> str:
-    """능동적 상기(active recall) 1단계 — 뜻/예문을 바로 보여주지 않고 먼저 추측해볼 기회를 준다."""
-    lines = [f"📘 {item.word}"]
-    if item.pronunciation:
-        lines.append(f"발음: {item.pronunciation}")
-    lines.append("\n이 단어, 뜻이 뭘 것 같아요? 먼저 한번 생각해보세요 🤔")
-    return "\n".join(lines)
-
-
 def _word_card_text(item: vocab_service.WordItem) -> str:
-    lines = [f"📘 {item.word}", f"뜻: {item.meaning_ko}"]
+    # 연구 근거 반영(사용자 피드백): 첫 노출 때 맨입으로 추측시키는 것은 학습 효과가 낮다는 연구에
+    # 따라 뜻/발음/예문/연상법을 곧바로 전부 보여준다("추측 먼저" 단계는 넣지 않음). 복습 중 다시
+    # 만났을 때의 능동적 상기는 [모르는단어] → 객관식 → 주관식 흐름이 이미 담당한다(안 건드림).
+    emoji_prefix = f"{item.emoji} " if item.emoji else ""
+    lines = [f"{emoji_prefix}📘 {item.word}", f"뜻: {item.meaning_ko}"]
     if item.pronunciation:
         lines.append(f"발음: {item.pronunciation}")
     example_sentence, example_translation = vocab_service.pick_example(item)
@@ -636,13 +629,6 @@ def _word_card_text(item: vocab_service.WordItem) -> str:
 
 
 async def _send_word_card(chat_id: int, item: vocab_service.WordItem) -> None:
-    """능동적 상기 1단계 카드 발송 — [뜻 확인하기]를 눌러야 2단계(정답 공개)로 넘어간다."""
-    keyboard = build_inline_keyboard([("뜻 확인하기", f"vocab:reveal:{item.word_id}")], columns=1)
-    await send_message(chat_id, _word_recall_prompt_text(item), reply_markup=keyboard)
-
-
-async def _send_word_reveal(chat_id: int, item: vocab_service.WordItem) -> None:
-    """능동적 상기 2단계 — 뜻/예문/연상법을 공개하고 아는/모르는단어를 판단하게 한다."""
     keyboard = build_inline_keyboard(
         [
             ("아는단어", f"vocab:known:{item.word_id}"),
@@ -652,14 +638,6 @@ async def _send_word_reveal(chat_id: int, item: vocab_service.WordItem) -> None:
         columns=2,
     )
     await send_message(chat_id, _word_card_text(item), reply_markup=keyboard)
-
-
-async def _handle_word_reveal(telegram_id: str, chat_id: int, word_id: int) -> None:
-    item = vocab_service.current_item(telegram_id)
-    if item is None or item.word_id != word_id or vocab_service.current_stage(telegram_id) != "recall":
-        return
-    vocab_service.enter_card_stage(telegram_id)
-    await _send_word_reveal(chat_id, item)
 
 
 async def _handle_word_pronunciation(telegram_id: str, chat_id: int, word_id: int) -> None:
@@ -876,7 +854,14 @@ async def _handle_vocab_subjective_answer(telegram_id: str, chat_id: int, user, 
     if item.is_new:
         await _record_word_band_attempt(telegram_id, user, item.word_id, is_correct)
 
-    feedback = "정답입니다!" if is_correct else f"아쉬워요. 정답은 '{item.meaning_ko}' 입니다."
+    if is_correct:
+        feedback = "정답입니다!"
+    else:
+        # 사용자 피드백(암기법 연구): 오답 시 정답만 알려주지 말고 연상법을 그 자리에서 다시
+        # 보여줘서 재학습 기회로 삼는다.
+        feedback = f"아쉬워요. 정답은 '{item.meaning_ko}' 입니다."
+        if item.mnemonic:
+            feedback += f"\n💡 {item.mnemonic}"
     await send_message(chat_id, feedback)
     await _finish_vocab_word(telegram_id, chat_id, user)
 
@@ -1239,6 +1224,27 @@ CONVERSATION_SIMPLIFY_INSTRUCTION = (
     "훨씬 더 쉬운 단어와 짧고 단순한 문장 구조로 다시 답하라."
 )
 
+CONVERSATION_TEMPORARILY_UNAVAILABLE = "지금 일시적으로 응답이 어렵습니다. 잠시 후 다시 시도해주세요."
+
+
+async def _generate_conversation_turn(generate) -> str | None:
+    """회화 AI 호출 공용 재시도 래퍼.
+
+    버그리포트: 정상 응답인데도 고정된 "Sorry, I had trouble..." 문구가 반복 노출됨 — 원인은
+    예외 발생 시 재시도 없이 곧바로 같은 고정 문구를 반환하고, 그 문구를 실제 AI 턴처럼
+    대화 히스토리/DB에 저장해버린 것(다음 턴 프롬프트를 오염시켜 실패가 반복되기 쉬워짐).
+    이제 1회 재시도하고, 그래도 실패하면 호출부가 "실패했다"는 사실을 정확히 구분해서
+    처리할 수 있도록 None을 반환한다(더 이상 고정 문구를 여기서 만들어내지 않음).
+
+    generate: 인자 없는 async 콜러블(1차 생성 + 필요시 난이도 재생성까지 포함).
+    """
+    for attempt in range(1, 3):
+        try:
+            return await generate()
+        except Exception:
+            logger.exception("conversation AI call failed (attempt %d/2)", attempt)
+    return None
+
 
 async def _get_conversation_level(user) -> int:
     return user["conversation_level"] if user["conversation_level"] is not None else conversation_difficulty.DEFAULT_LEVEL
@@ -1347,7 +1353,8 @@ async def _begin_conversation(
 ) -> bool:
     conv_level = await _get_conversation_level(user)
     preview_word_texts = [row["word"] for row in preview_words]
-    try:
+
+    async def _generate() -> str:
         opening = await conversation_chat.generate_opening(
             level,
             learning_mode=user["learning_mode"],
@@ -1364,8 +1371,10 @@ async def _begin_conversation(
                 topic=topic,
                 preview_words=preview_word_texts,
             )
-    except Exception:
-        logger.exception("conversation opening failed")
+        return opening
+
+    opening = await _generate_conversation_turn(_generate)
+    if opening is None:
         await send_message(
             chat_id,
             "회화 연습을 시작하지 못했습니다. 잠시 후 다시 시도해 주세요.",
@@ -1394,7 +1403,7 @@ async def _handle_conversation_message(telegram_id: str, chat_id: int, user, tex
     await conversation_repo.add_message(session.session_id, "user", text)
     conv_level = await _get_conversation_level(user)
 
-    try:
+    async def _generate() -> str:
         ai_reply = await conversation_chat.generate_reply(
             session.level,
             session.history,
@@ -1415,9 +1424,15 @@ async def _handle_conversation_message(telegram_id: str, chat_id: int, user, tex
                 topic=session.topic,
                 preview_words=session.preview_words,
             )
-    except Exception:
-        logger.exception("conversation reply failed")
-        ai_reply = "Sorry, I had trouble responding just now. Let's continue — what do you think?"
+        return ai_reply
+
+    ai_reply = await _generate_conversation_turn(_generate)
+    if ai_reply is None:
+        # 1회 재시도까지 실패한 경우: 실제 AI 턴이 아니므로 히스토리/DB에 저장하지 않고, 턴 카운트도
+        # 올리지 않는다 — 그래야 다음에 사용자가 다시 보낼 때 정상적으로 재시도된다(버그리포트:
+        # 예전에는 고정 문구를 실제 턴처럼 저장해서 다음 프롬프트를 오염시키고 실패가 반복됐음).
+        await send_message(chat_id, CONVERSATION_TEMPORARILY_UNAVAILABLE)
+        return
 
     await conversation_repo.add_message(session.session_id, "model", ai_reply)
     turn_count = conversation_service.add_user_turn(telegram_id, text, ai_reply)

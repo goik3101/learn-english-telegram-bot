@@ -12,7 +12,7 @@ async def get_due_review_words(user_id: int, today: date) -> list[dict[str, Any]
                 """
                 select uw.word_id, uw.ease, uw.interval_days, uw.review_count,
                        w.word, w.meaning_ko, w.pronunciation, w.example_sentence, w.example_translation, w.level,
-                       w.mnemonic, w.example_sentences
+                       w.mnemonic, w.example_sentences, w.emoji
                 from user_words uw
                 join words w on w.id = uw.word_id
                 where uw.user_id = %s and uw.next_review_date <= %s and uw.status != 'new'
@@ -50,7 +50,7 @@ async def get_new_words(
                 f"""
                 select w.id as word_id, w.word, w.meaning_ko, w.pronunciation,
                        w.example_sentence, w.example_translation, w.level, w.frequency_rank,
-                       w.mnemonic, w.example_sentences
+                       w.mnemonic, w.example_sentences, w.emoji
                 from words w
                 where {where_clause}
                   and not exists (

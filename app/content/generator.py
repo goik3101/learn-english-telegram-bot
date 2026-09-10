@@ -28,10 +28,11 @@ def tone_note(learning_mode: str) -> str:
 # 추출되는 보조 단어(key_vocabulary)까지 강제하면 기존 프롬프트를 전부 바꿔야 해서 범위를 좁혔다
 # — 그 단어들은 frequency_rank가 NULL로 남고, 조회 시 정렬 맨 뒤로 밀리는 정도로만 처리된다.
 #
-# 사용자 피드백(단어 암기 효율): mnemonic(연상법)과 example_sentences(복습 회차마다 다른 예문을
-# 보여주기 위한 여러 예문)를 추가했다. example_sentence/example_translation(단일) 필드는 AI에게
-# 별도로 다시 요청하지 않고 example_sentences[0]에서 그대로 파생시킨다(불일치 위험 제거) — 아래
-# generate_words()/generate_topic_words() 참고.
+# 사용자 피드백(단어 암기 효율, 기억연구 근거): mnemonic(2단계 키워드 연상법)과 example_sentences
+# (복습 회차마다 다른 예문을 보여주기 위한 여러 예문), emoji(이중부호화 — 텍스트+이미지 병행 제시)를
+# 추가했다. example_sentence/example_translation(단일) 필드는 AI에게 별도로 다시 요청하지 않고
+# example_sentences[0]에서 그대로 파생시킨다(불일치 위험 제거) — 아래 generate_words()/
+# generate_topic_words() 참고.
 _WORD_REQUIRED_FIELDS = {
     "word",
     "meaning_ko",
@@ -40,7 +41,22 @@ _WORD_REQUIRED_FIELDS = {
     "mnemonic",
     "example_sentences",
     "frequency_rank",
+    "emoji",
 }
+
+# 사용자 피드백: 키워드 연상법(keyword mnemonic) — 2단계로 만들 것. 1단계(소리 연결) 영단어와
+# 발음이 비슷한 한국어 단어/표현을 찾고, 2단계(이미지 연결) 그 한국어 키워드와 실제 뜻이 함께
+# 등장하는 생생하고 구체적인(가능하면 약간 과장되거나 우스꽝스러운) 장면을 묘사한다. 세 프롬프트
+# (전체 생성/주제별 생성/기존 콘텐츠 소급 백필)가 이 지침을 공유한다.
+_MNEMONIC_STYLE_INSTRUCTION = """mnemonic(연상법) 작성 방식 — 2단계 키워드 연상법, 반드시 이 방식을 따를 것:
+1단계(소리 연결): 영단어와 발음이 비슷한 한국어 단어/표현을 찾아라.
+2단계(이미지 연결): 그 한국어 키워드와 실제 뜻이 함께 등장하는, 생생하고 구체적인(가능하면 약간
+과장되거나 우스꽝스러운) 장면을 한두 문장으로 묘사하라.
+예: "important(중요한) → '임포턴트'는 '임금님 텐트'처럼 들림 → 임금님이 가장 중요한 물건만 넣어두는
+특별한 텐트를 상상해보세요."
+"~라는 뜻이다" 식의 단순 뜻풀이 반복은 안 된다.
+또한 이 단어의 의미를 한눈에 떠올리게 해줄 이모지(emoji)를 정확히 1개 골라라(텍스트와 이미지를
+함께 제시하면 기억에 더 잘 남는다는 이중부호화 원리)."""
 _KEY_VOCAB_REQUIRED_FIELDS = {
     "word",
     "meaning_ko",
@@ -64,10 +80,7 @@ _WORD_PROMPT_TEMPLATE = """너는 영어 학습 콘텐츠 제작자다. {level}(
 각 단어에는 실제 영어 사용빈도 순위(frequency_rank)를 Oxford 3000/5000 및 COCA(Corpus of Contemporary
 American English) 빈도 자료를 참고해 정수로 추정해서 함께 제공하라(1에 가까울수록 매우 흔한 단어,
 숫자가 클수록 드물고 어려운 단어 — 예: "important"는 500 전후, "inexorable"은 10000 이상).
-암기를 돕기 위해 각 단어마다 생생하고 구체적인 연상법(mnemonic)을 한국어로 한 문장 만들어라 — "~라는 뜻이다"
-식의 단순 뜻풀이 반복이 아니라, 발음이나 이미지·스토리를 이용해 "이 단어를 이렇게 기억해보세요: ~" 형태로
-구체적으로 작성하라(예: "obstinate(고집스러운) — 'ob'(막다)+'stinate'가 'stay'처럼 들리니, 계속 그 자리에
-'막고 버티고 서있는' 사람을 떠올려보세요").
+""" + _MNEMONIC_STYLE_INSTRUCTION + """
 또한 서로 다른 문맥의 예문(example_sentences) 2~3개를 만들어라 — 나중에 이 단어를 복습할 때마다 매번
 다른 문장을 보여줘서 문맥 다양성으로 기억을 돕기 위함이다.
 {tone_note}아래 JSON 배열 형식으로만 응답하고, 다른 설명은 절대 추가하지 마라.
@@ -77,7 +90,8 @@ American English) 빈도 자료를 참고해 정수로 추정해서 함께 제�
     "meaning_ko": "한국어 뜻",
     "part_of_speech": "품사 (예: noun, verb, adjective)",
     "pronunciation": "IPA 발음기호",
-    "mnemonic": "이 단어를 이렇게 기억해보세요: ~",
+    "mnemonic": "1단계(소리): ~처럼 들림. 2단계(이미지): ~하는 장면을 상상해보세요.",
+    "emoji": "🏰",
     "example_sentences": [
       {{"sentence": "영어 예문 1", "translation": "한국어 해석 1"}},
       {{"sentence": "영어 예문 2 (문맥이 다른 문장)", "translation": "한국어 해석 2"}}
@@ -150,6 +164,8 @@ def _is_valid_word(item: Any) -> bool:
     if not (isinstance(rank, int) and not isinstance(rank, bool) and rank > 0):
         return False
     if not (isinstance(item["mnemonic"], str) and item["mnemonic"].strip()):
+        return False
+    if not (isinstance(item["emoji"], str) and item["emoji"].strip()):
         return False
     examples = item["example_sentences"]
     return (
@@ -234,9 +250,9 @@ async def estimate_frequency_ranks(words: list[str]) -> list[dict]:
     return valid
 
 
-_MNEMONIC_BACKFILL_PROMPT = """다음은 이미 만들어진 영어 단어와 뜻 목록이다. 각 단어마다 암기를 돕는
-생생하고 구체적인 연상법(mnemonic)을 한국어로 한 문장씩("이 단어를 이렇게 기억해보세요: ~" 형태, 단순
-뜻풀이 반복 금지) 만들고, 서로 다른 문맥의 예문(example_sentences) 2개씩도 만들어라.
+_MNEMONIC_BACKFILL_PROMPT = """다음은 이미 만들어진 영어 단어와 뜻 목록이다.
+""" + _MNEMONIC_STYLE_INSTRUCTION + """
+또한 서로 다른 문맥의 예문(example_sentences)도 2개씩 만들어라.
 
 단어 목록: {words}
 
@@ -245,7 +261,8 @@ _MNEMONIC_BACKFILL_PROMPT = """다음은 이미 만들어진 영어 단어와 �
 [
   {{
     "word": "영어단어",
-    "mnemonic": "이 단어를 이렇게 기억해보세요: ~",
+    "mnemonic": "1단계(소리): ~처럼 들림. 2단계(이미지): ~하는 장면을 상상해보세요.",
+    "emoji": "🏰",
     "example_sentences": [
       {{"sentence": "영어 예문 1", "translation": "한국어 해석 1"}},
       {{"sentence": "영어 예문 2 (문맥이 다른 문장)", "translation": "한국어 해석 2"}}
@@ -255,7 +272,8 @@ _MNEMONIC_BACKFILL_PROMPT = """다음은 이미 만들어진 영어 단어와 �
 
 
 async def estimate_mnemonics_and_examples(words: list[dict]) -> list[dict]:
-    """기존(mnemonic 도입 이전) 콘텐츠뱅크 단어 소급 백필용 — scripts/backfill_word_mnemonics.py.
+    """기존(2단계 키워드 연상법/이모지 도입 이전) 콘텐츠뱅크 단어 소급 백필용 —
+    scripts/backfill_word_mnemonics.py.
 
     words: [{"word": ..., "meaning_ko": ...}, ...]
     """
@@ -314,9 +332,9 @@ _TOPIC_WORD_PROMPT_TEMPLATE = """너는 영어 학습 콘텐츠 제작자다. �
 이 주제로 실제 대화할 때 자주 쓰일 법한 단어 위주로 골라라(품사 제한 없음). 각 단어에는 실제 영어
 사용빈도 순위(frequency_rank)를 Oxford 3000/5000 및 COCA(Corpus of Contemporary American English)
 빈도 자료를 참고해 정수로 추정해서 함께 제공하라(1에 가까울수록 흔한 단어, 숫자가 클수록 드문 단어).
-암기를 돕기 위해 각 단어마다 생생하고 구체적인 연상법(mnemonic)을 한국어로 한 문장 만들어라("이 단어를
-이렇게 기억해보세요: ~" 형태, 단순 뜻풀이 반복 금지). 또한 서로 다른 문맥의 예문(example_sentences)
-2~3개를 만들어라 — 복습할 때마다 다른 문장을 보여주기 위함이다.
+""" + _MNEMONIC_STYLE_INSTRUCTION + """
+또한 서로 다른 문맥의 예문(example_sentences) 2~3개를 만들어라 — 복습할 때마다 다른 문장을 보여주기
+위함이다.
 {tone_note}아래 JSON 배열 형식으로만 응답하고, 다른 설명은 절대 추가하지 마라.
 [
   {{
@@ -324,7 +342,8 @@ _TOPIC_WORD_PROMPT_TEMPLATE = """너는 영어 학습 콘텐츠 제작자다. �
     "meaning_ko": "한국어 뜻",
     "part_of_speech": "품사 (예: noun, verb, adjective)",
     "pronunciation": "IPA 발음기호",
-    "mnemonic": "이 단어를 이렇게 기억해보세요: ~",
+    "mnemonic": "1단계(소리): ~처럼 들림. 2단계(이미지): ~하는 장면을 상상해보세요.",
+    "emoji": "🏰",
     "example_sentences": [
       {{"sentence": "영어 예문 1", "translation": "한국어 해석 1"}},
       {{"sentence": "영어 예문 2 (문맥이 다른 문장)", "translation": "한국어 해석 2"}}

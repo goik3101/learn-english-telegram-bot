@@ -1,5 +1,7 @@
-"""단어 암기 효율 개선(사용자 피드백): mnemonic(연상법)/example_sentences(복습회차별 다른 예문)
-도입 이전에 만들어진 기존 콘텐츠뱅크 단어에 소급 부여한다 (1회성 스크립트).
+"""단어 암기 효율 개선(사용자 피드백, 기억연구 근거): 2단계 키워드 연상법(mnemonic)/
+example_sentences(복습회차별 다른 예문)/emoji(이중부호화) 도입 이전에 만들어진 기존 콘텐츠뱅크
+단어에 소급 부여한다 (1회성 스크립트). mnemonic은 있지만 emoji가 없는 단어(구버전 스타일)도
+대상에 포함해 최신 스타일로 다시 채운다.
 
 사용법:
     python scripts/backfill_word_mnemonics.py
@@ -25,7 +27,7 @@ async def main() -> None:
     await init_db_pool()
     try:
         rows = await content_repo.get_words_missing_mnemonic()
-        print(f"mnemonic 없는 단어 {len(rows)}개")
+        print(f"mnemonic/emoji 없는 단어 {len(rows)}개")
 
         total_updated = 0
         for i in range(0, len(rows), BATCH_SIZE):
@@ -44,13 +46,13 @@ async def main() -> None:
                 estimate = by_word.get(row["word"])
                 if estimate is not None:
                     await content_repo.update_mnemonic_and_examples(
-                        row["id"], estimate["mnemonic"], estimate["example_sentences"]
+                        row["id"], estimate["mnemonic"], estimate["example_sentences"], estimate.get("emoji")
                     )
                     updated += 1
             total_updated += updated
             print(f"batch {i // BATCH_SIZE + 1}: {updated}/{len(batch)} 업데이트")
 
-        print(f"총 {total_updated}/{len(rows)}개 단어에 mnemonic/example_sentences 부여")
+        print(f"총 {total_updated}/{len(rows)}개 단어에 mnemonic/example_sentences/emoji 부여")
     finally:
         await close_db_pool()
 

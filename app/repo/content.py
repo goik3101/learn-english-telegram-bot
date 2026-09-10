@@ -17,8 +17,8 @@ async def insert_words(level: str, words: list[dict], learning_mode: str = "GENE
                     """
                     insert into words
                         (word, meaning_ko, part_of_speech, pronunciation, example_sentence, example_translation,
-                         level, learning_mode, frequency_rank, mnemonic, example_sentences)
-                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         level, learning_mode, frequency_rank, mnemonic, example_sentences, emoji)
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     on conflict (word, learning_mode) do nothing
                     """,
                     (
@@ -33,6 +33,7 @@ async def insert_words(level: str, words: list[dict], learning_mode: str = "GENE
                         w.get("frequency_rank"),
                         w.get("mnemonic"),
                         Json(example_sentences) if example_sentences else None,
+                        w.get("emoji"),
                     ),
                 )
                 inserted += cur.rowcount
@@ -75,21 +76,29 @@ async def update_frequency_rank(word_id: int, frequency_rank: int) -> None:
 
 
 async def get_words_missing_mnemonic() -> list[dict]:
-    """단어 암기 효율 개선(연상법/예문다양화) 소급 백필용 — scripts/backfill_word_mnemonics.py."""
-    pool = get_pool()
-    async with pool.connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute("select id, word, meaning_ko from words where mnemonic is null")
-            return await cur.fetchall()
+    """단어 암기 효율 개선(연상법/예문다양화/이모지) 소급 백필용 — scripts/backfill_word_mnemonics.py.
 
-
-async def update_mnemonic_and_examples(word_id: int, mnemonic: str, example_sentences: list[dict]) -> None:
+    emoji가 나중에 추가된 필드라, mnemonic은 있어도 emoji가 없는 단어(예: M19 회화 사전학습 때
+    생성된 주제 단어)도 다시 채워야 해서 둘 중 하나라도 비어있으면 대상에 포함한다.
+    """
     pool = get_pool()
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "update words set mnemonic = %s, example_sentences = %s where id = %s",
-                (mnemonic, Json(example_sentences), word_id),
+                "select id, word, meaning_ko from words where mnemonic is null or emoji is null"
+            )
+            return await cur.fetchall()
+
+
+async def update_mnemonic_and_examples(
+    word_id: int, mnemonic: str, example_sentences: list[dict], emoji: str | None = None
+) -> None:
+    pool = get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "update words set mnemonic = %s, example_sentences = %s, emoji = coalesce(%s, emoji) where id = %s",
+                (mnemonic, Json(example_sentences), emoji, word_id),
             )
 
 
@@ -208,7 +217,8 @@ async def get_topic_words(topic: str, level: str, learning_mode: str, limit: int
             await cur.execute(
                 """
                 select w.id as word_id, w.word, w.meaning_ko, w.pronunciation,
-                       w.example_sentence, w.example_translation, w.level
+                       w.example_sentence, w.example_translation, w.level,
+                       w.mnemonic, w.example_sentences, w.emoji
                 from conversation_topic_words ctw
                 join words w on w.id = ctw.word_id
                 where ctw.topic = %s and ctw.level = %s and ctw.learning_mode = %s

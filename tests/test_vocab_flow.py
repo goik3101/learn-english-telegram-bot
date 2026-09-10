@@ -121,26 +121,22 @@ def test_vocab_session_start_message_separates_review_and_new_counts(monkeypatch
     assert "총 3개" in start_message
 
 
-def test_word_card_hides_meaning_until_reveal_then_shows_mnemonic(monkeypatch):
-    """능동적 상기(active recall): 카드를 처음 보여줄 때는 뜻/예문을 바로 노출하지 않고, [뜻 확인하기]를
-    눌러야 뜻/예문/연상법이 공개돼야 한다."""
+def test_word_card_shows_meaning_and_mnemonic_and_emoji_immediately(monkeypatch):
+    """사용자 피드백(기억연구 근거): 첫 노출 때 맨입으로 추측시키는 건 효과가 낮으므로, 카드를
+    처음 보여줄 때부터 뜻/발음/예문/연상법/이모지를 곧바로 전부 노출해야 한다(추측 단계 없음)."""
     row = _word_row(60, "apple", "사과")
-    row["mnemonic"] = "이 단어를 이렇게 기억해보세요: an apple a day."
+    row["mnemonic"] = "1단계(소리): '애플'은 '아파'처럼 들림. 2단계(이미지): 사과를 먹다가 배가 아파오는 장면을 상상해보세요."
+    row["emoji"] = "🍎"
     fake_users, fake_user_words, sent = _wire(monkeypatch, new_rows=[row])
     telegram_id = "606"
     _setup_general_user(fake_users, telegram_id)
 
     run(router.handle_update({"message": {"chat": {"id": 606}, "text": "/단어학습"}}))
-    recall_text = sent[-1][1]
-    assert "apple" in recall_text
-    assert "사과" not in recall_text  # 뜻은 아직 노출되면 안 됨
-    assert vocab_service.current_stage(telegram_id) == "recall"
-
-    sent.clear()
-    run(router.handle_update(_callback_update(606, "vocab:reveal:60")))
-    reveal_text = sent[-1][1]
-    assert "사과" in reveal_text
-    assert "an apple a day" in reveal_text
+    card_text = sent[-1][1]
+    assert "apple" in card_text
+    assert "사과" in card_text
+    assert "아파" in card_text
+    assert "🍎" in card_text
     assert vocab_service.current_stage(telegram_id) == "card"
 
 
@@ -151,9 +147,7 @@ def test_session_summary_lists_new_words_learned(monkeypatch):
     _setup_general_user(fake_users, telegram_id)
 
     run(router.handle_update({"message": {"chat": {"id": 607}, "text": "/단어학습"}}))
-    run(router.handle_update(_callback_update(607, "vocab:reveal:61")))
     run(router.handle_update(_callback_update(607, "vocab:known:61")))
-    run(router.handle_update(_callback_update(607, "vocab:reveal:62")))
     sent.clear()
     run(router.handle_update(_callback_update(607, "vocab:known:62")))
 
@@ -187,7 +181,6 @@ def test_vocab_session_unknown_word_mcq_then_subjective_correct(monkeypatch):
     _setup_general_user(fake_users, telegram_id)
 
     run(router.handle_update({"message": {"chat": {"id": 602}, "text": "/단어학습"}}))
-    run(router.handle_update(_callback_update(602, "vocab:reveal:10")))
     run(router.handle_update(_callback_update(602, "vocab:unknown:10")))
     assert vocab_service.current_stage(telegram_id) == "mcq"
 
@@ -217,7 +210,6 @@ def test_vocab_session_subjective_incorrect_resets_interval_and_lowers_ease(monk
     _setup_general_user(fake_users, telegram_id)
 
     run(router.handle_update({"message": {"chat": {"id": 603}, "text": "/단어학습"}}))
-    run(router.handle_update(_callback_update(603, "vocab:reveal:20")))
     run(router.handle_update(_callback_update(603, "vocab:unknown:20")))
     choices, correct_index = vocab_service.get_mcq(telegram_id)
     wrong_index = (correct_index + 1) % len(choices)
@@ -228,7 +220,27 @@ def test_vocab_session_subjective_incorrect_resets_interval_and_lowers_ease(monk
     user_id, word_id, status, ease, interval_days, _ = fake_user_words.progress_calls[-1]
     assert (word_id, status) == (20, "learning")
     assert ease == 1.5  # 1.7 - 0.2
-    assert interval_days == 1  # 오답이므로 리셋
+
+
+def test_subjective_wrong_answer_reshows_mnemonic(monkeypatch):
+    """사용자 피드백(암기법 연구): 오답 시 정답만 알려주지 말고 연상법을 재노출해 그 자리에서
+    재학습되게 해야 한다."""
+    row = _word_row(22, "apple", "사과")
+    row["mnemonic"] = "1단계(소리): '애플'은 '아파'처럼 들림. 2단계(이미지): 사과를 먹다가 배가 아파오는 장면."
+    fake_users, fake_user_words, sent = _wire(monkeypatch, new_rows=[row])
+    telegram_id = "608"
+    _setup_general_user(fake_users, telegram_id)
+
+    run(router.handle_update({"message": {"chat": {"id": 608}, "text": "/단어학습"}}))
+    run(router.handle_update(_callback_update(608, "vocab:unknown:22")))
+    choices, correct_index = vocab_service.get_mcq(telegram_id)
+    wrong_index = (correct_index + 1) % len(choices)
+    run(router.handle_update(_callback_update(608, f"vocab:mcq:22:{wrong_index}")))
+
+    sent.clear()
+    run(router.handle_update({"message": {"chat": {"id": 608}, "text": "완전히 틀린 답"}}))
+
+    assert "아파" in sent[0][1]
 
 
 def test_vocab_mcq_wrong_answer_hides_reveal_behind_spoiler(monkeypatch):
@@ -238,7 +250,6 @@ def test_vocab_mcq_wrong_answer_hides_reveal_behind_spoiler(monkeypatch):
     _setup_general_user(fake_users, telegram_id)
 
     run(router.handle_update({"message": {"chat": {"id": 605}, "text": "/단어학습"}}))
-    run(router.handle_update(_callback_update(605, "vocab:reveal:21")))
     run(router.handle_update(_callback_update(605, "vocab:unknown:21")))
     choices, correct_index = vocab_service.get_mcq(telegram_id)
     wrong_index = (correct_index + 1) % len(choices)

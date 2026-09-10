@@ -14,7 +14,8 @@ def test_generate_words_parses_and_filters_malformed(monkeypatch):
         "meaning_ko": "사과",
         "part_of_speech": "noun",
         "pronunciation": "/ˈæpəl/",
-        "mnemonic": "이 단어를 이렇게 기억해보세요: 사과는 하루에 하나씩(an apple a day).",
+        "mnemonic": "1단계(소리): '애플'은 '아파(아이 아파)'처럼 들림. 2단계(이미지): 사과를 먹다가 배가 아파오는 장면을 상상해보세요.",
+        "emoji": "🍎",
         "example_sentences": [
             {"sentence": "I ate an apple.", "translation": "나는 사과를 먹었다."},
             {"sentence": "She bought a red apple.", "translation": "그녀는 빨간 사과를 샀다."},
@@ -93,7 +94,8 @@ def test_generate_topic_words_parses_and_filters_malformed(monkeypatch):
         "meaning_ko": "여행 가방",
         "part_of_speech": "noun",
         "pronunciation": "/ˈsuːtkeɪs/",
-        "mnemonic": "이 단어를 이렇게 기억해보세요: 'suit'(정장)를 'case'(가방)에 넣는 모습.",
+        "mnemonic": "1단계(소리): '수트케이스'는 '수트 입고 케이스 들기'처럼 들림. 2단계(이미지): 정장을 입고 여행가방을 끄는 모습을 상상해보세요.",
+        "emoji": "🧳",
         "example_sentences": [
             {"sentence": "I packed my suitcase.", "translation": "나는 여행 가방을 쌌다."},
             {"sentence": "Her suitcase was too heavy.", "translation": "그녀의 여행 가방은 너무 무거웠다."},
