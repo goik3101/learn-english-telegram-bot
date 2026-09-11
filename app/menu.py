@@ -5,7 +5,6 @@ VOCAB_STUDY = "📚 단어 학습"
 VOCAB_QUIZ = "🔤 단어 시험"
 GRAMMAR_STUDY = "✍️ 문법 학습"
 READING = "📖 해석(Reading)"
-CONVERSATION = "💬 회화(Conversation)"
 TEXT_PASTE = "📄 텍스트 붙여넣기 학습"
 SCHOOL_ASSIGNMENT = "📝 학교 수행평가"
 SCHOOL_EXAM = "📅 시험관리"
@@ -19,14 +18,14 @@ NOT_YET_IMPLEMENTED: dict[str, str] = {}
 
 
 def build_main_menu_keyboard(is_admin: bool) -> dict:
-    # 사용자 피드백: 문법/단어/해석/회화 등 어떤 학습 중에도 중단할 방법이 없었음 —
+    # 사용자 피드백: 문법/단어/해석 등 어떤 학습 중에도 중단할 방법이 없었음 —
     # 명령어를 몰라도 언제든 누를 수 있게 메인 메뉴에 상시 노출한다(맨 위 줄).
     rows = [
         [STOP_LEARNING],
         [TODAY_LEARNING, VOCAB_STUDY],
         [VOCAB_QUIZ, GRAMMAR_STUDY],
-        [READING, CONVERSATION],
-        [TEXT_PASTE, SCHOOL_ASSIGNMENT],
+        [READING, TEXT_PASTE],
+        [SCHOOL_ASSIGNMENT],
         [SCHOOL_EXAM],
         [REVIEW, PROGRESS],
     ]
@@ -48,8 +47,7 @@ GENERAL_COMMANDS: list[tuple[str, str]] = [
     ("grammarstudy", "문법 학습 (하루 1회)"),
     ("review", "문법 복습 (무제한)"),
     ("reading", "해석(Reading) — 지문 해석 후 AI 힌트/피드백"),
-    ("conversation", "회화(Conversation) — AI와 5턴 영어 대화 (하루 1회)"),
-    ("progress", "진도 확인 — 레벨/단어/문법/해석/회화 학습 현황"),
+    ("progress", "진도 확인 — 레벨/단어/문법/해석 학습 현황"),
     ("customtext", "텍스트 붙여넣기 학습 — 원하는 글을 붙여넣고 단어/해석 학습"),
     ("schooltask", "학교 수행평가 — 지문 붙여넣기 → 단어학습 → 문법해설 → 예상시험문제"),
     ("examregister", "학교 시험 등록 — 과목/날짜/단원/선생님강조사항"),

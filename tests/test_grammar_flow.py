@@ -4,13 +4,23 @@ from tests.test_vocab_flow import _setup_general_user
 
 
 class FakeGrammarRepo:
-    def __init__(self, questions=None, already_done_today=False, weak_topics=None, accuracy=None):
+    """기본 플로우 테스트용 — 파트 기반 커리큘럼 진행 자체를 검증하려면 test_grammar_difficulty.py의
+    더 정교한 FakeGrammarRepo(실제 파트/토픽 상태를 흉내냄)를 쓴다. 여기서는 current_part를 안 주면
+    (기본값) 커리큘럼이 비어있는 것으로 취급해 get_random_questions 폴백 경로를 타게 해서, 기존
+    단순 플로우 테스트(정답/오답 기록, 개념설명 순서, 하루제한 등)가 문제 출처와 무관하게 그대로
+    동작하게 한다."""
+
+    def __init__(self, questions=None, already_done_today=False, weak_topics=None, accuracy=None, current_part=None):
         self.questions = questions or []
         self.already_done_today = already_done_today
         self.weak_topics = weak_topics or []
         self.accuracy = accuracy
+        self.current_part = current_part
         self.recorded: list[tuple] = []
         self.mode_calls: list[str] = []
+        self.progress: dict[int, dict] = {}
+        self.part_progress: dict[tuple, dict] = {}
+        self.part_attempts: list[tuple] = []
 
     async def get_random_questions(self, level, limit, learning_mode="GENERAL"):
         self.mode_calls.append(learning_mode)
@@ -20,11 +30,12 @@ class FakeGrammarRepo:
         self.mode_calls.append(learning_mode)
         return self.questions[:limit]
 
+    async def get_questions_for_part(self, part_id, limit, learning_mode="GENERAL", prioritize_error_types=None):
+        self.mode_calls.append(learning_mode)
+        return self.questions[:limit]
+
     async def get_topic_accuracy_map(self, user_id, min_attempts=3):
         return {}
-
-    async def get_topic_recent_results(self, user_id, topic, limit):
-        return []
 
     async def get_weighted_review_questions(self, level, limit, learning_mode, weak_topics):
         return self.questions[:limit]
@@ -40,6 +51,39 @@ class FakeGrammarRepo:
 
     async def record_answer(self, user_id, question_id, is_correct, error_tag, is_review):
         self.recorded.append((user_id, question_id, is_correct, error_tag, is_review))
+
+    async def get_user_progress(self, user_id):
+        return self.progress.get(user_id)
+
+    async def get_first_part(self):
+        return self.current_part
+
+    async def get_part_by_id(self, part_id):
+        return self.current_part if self.current_part and self.current_part["id"] == part_id else None
+
+    async def get_next_part_after(self, part_id):
+        return None
+
+    async def set_user_progress(self, user_id, topic_id, part_id):
+        self.progress[user_id] = {"current_topic_id": topic_id, "current_part_id": part_id}
+
+    async def get_weak_error_types_for_part(self, user_id, part_id, limit):
+        return []
+
+    async def get_part_recent_results(self, user_id, part_id, limit, is_review=False):
+        return []
+
+    async def record_part_attempt(self, user_id, part_id, is_correct):
+        self.part_attempts.append((user_id, part_id, is_correct))
+
+    async def get_part_progress(self, user_id, part_id):
+        return self.part_progress.get((user_id, part_id))
+
+    async def set_part_status(self, user_id, part_id, status):
+        self.part_progress[(user_id, part_id)] = {"status": status}
+
+    async def get_topic_names_up_to(self, global_order_index):
+        return []
 
 
 def _question_row(qid, topic, prompt, choices, correct_index, explanation="설명", concept_intro="개념 설명"):

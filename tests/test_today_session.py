@@ -1,5 +1,4 @@
 from app.handlers import router
-from tests.test_conversation_flow import FakeConversationRepo
 from tests.test_grammar_flow import FakeGrammarRepo, _question_row
 from tests.test_reading_flow import FakeReadingRepo, _passage_row
 from tests.test_router import FakeUsersRepo, run
@@ -75,15 +74,12 @@ def _wire(
     fake_sessions = FakeLearningSessionsRepo()
     # 기본값은 지문 없음 -> 해석 단계는 자동으로 건너뛴다.
     fake_reading = FakeReadingRepo(passage_row=reading_passage)
-    # 기본값은 "오늘 이미 완료" -> 회화 단계도 자동으로 건너뛰어 오늘의 학습이 종료된다(실제 AI 호출 방지).
-    fake_conversation = FakeConversationRepo(already_done=True)
 
     monkeypatch.setattr(router, "users_repo", fake_users)
     monkeypatch.setattr(router, "user_words_repo", fake_user_words)
     monkeypatch.setattr(router, "grammar_repo", fake_grammar)
     monkeypatch.setattr(router, "learning_sessions_repo", fake_sessions)
     monkeypatch.setattr(router, "reading_repo", fake_reading)
-    monkeypatch.setattr(router, "conversation_repo", fake_conversation)
     monkeypatch.setattr(router, "content_repo", FakeContentRepo(topic_word_rows=new_rows))
     monkeypatch.setattr(router, "content_generator", FakeContentGenerator())
     monkeypatch.setattr(router, "db_available", lambda: True)
@@ -102,7 +98,7 @@ def _wire(
     monkeypatch.setattr(router, "send_message", fake_send)
     monkeypatch.setattr(router, "answer_callback_query", fake_answer_cb)
     monkeypatch.setattr(router, "delete_message", fake_delete_message)
-    return fake_users, fake_user_words, fake_grammar, fake_sessions, fake_reading, fake_conversation, sent
+    return fake_users, fake_user_words, fake_grammar, fake_sessions, fake_reading, sent
 
 
 def _callback_update(telegram_id: int, data: str) -> dict:
@@ -117,7 +113,7 @@ def _callback_update(telegram_id: int, data: str) -> dict:
 
 
 def test_today_session_shows_ai_focus_message_when_weak_topics_exist(monkeypatch):
-    fake_users, fake_user_words, fake_grammar, fake_sessions, fake_reading, fake_conversation, sent = _wire(
+    fake_users, fake_user_words, fake_grammar, fake_sessions, fake_reading, sent = _wire(
         monkeypatch, new_rows=[], weak_topics=["가정법"], accuracy=0.4
     )
     telegram_id = "904"
@@ -137,7 +133,7 @@ def test_today_session_shows_ai_focus_message_when_weak_topics_exist(monkeypatch
 
 
 def test_today_session_skips_ai_call_when_no_weak_topics(monkeypatch):
-    fake_users, fake_user_words, fake_grammar, fake_sessions, fake_reading, fake_conversation, sent = _wire(monkeypatch, new_rows=[])
+    fake_users, fake_user_words, fake_grammar, fake_sessions, fake_reading, sent = _wire(monkeypatch, new_rows=[])
     telegram_id = "905"
     _setup_general_user(fake_users, telegram_id)
 
@@ -153,7 +149,7 @@ def test_today_session_skips_ai_call_when_no_weak_topics(monkeypatch):
 def test_today_session_chains_vocab_then_grammar_without_confirmation(monkeypatch):
     new_rows = [_word_row(70, "apple", "사과")]
     grammar_questions = [_question_row(90, "현재완료", "She ___ here.", ["live", "lived", "has lived", "living"], 2)]
-    fake_users, fake_user_words, fake_grammar, fake_sessions, fake_reading, fake_conversation, sent = _wire(
+    fake_users, fake_user_words, fake_grammar, fake_sessions, fake_reading, sent = _wire(
         monkeypatch, new_rows=new_rows, grammar_questions=grammar_questions
     )
     telegram_id = "901"
@@ -179,7 +175,7 @@ def test_today_session_chains_vocab_then_grammar_without_confirmation(monkeypatc
 
 def test_today_session_chains_through_reading_stage_when_passage_available(monkeypatch):
     grammar_questions = [_question_row(92, "가정법", "If I ___ rich.", ["am", "were", "was", "be"], 1)]
-    fake_users, fake_user_words, fake_grammar, fake_sessions, fake_reading, fake_conversation, sent = _wire(
+    fake_users, fake_user_words, fake_grammar, fake_sessions, fake_reading, sent = _wire(
         monkeypatch,
         new_rows=[],
         grammar_questions=grammar_questions,
@@ -211,7 +207,7 @@ def test_today_session_chains_through_reading_stage_when_passage_available(monke
 
 def test_today_session_skips_vocab_stage_when_nothing_to_learn(monkeypatch):
     grammar_questions = [_question_row(91, "관계대명사", "The book ___ I read.", ["who", "which", "whom", "whose"], 1)]
-    fake_users, fake_user_words, fake_grammar, fake_sessions, fake_reading, fake_conversation, sent = _wire(
+    fake_users, fake_user_words, fake_grammar, fake_sessions, fake_reading, sent = _wire(
         monkeypatch, new_rows=[], grammar_questions=grammar_questions
     )
     telegram_id = "902"
@@ -226,7 +222,7 @@ def test_today_session_skips_vocab_stage_when_nothing_to_learn(monkeypatch):
 
 def test_today_session_skips_grammar_when_already_done_today(monkeypatch):
     new_rows = [_word_row(71, "book", "책")]
-    fake_users, fake_user_words, fake_grammar, fake_sessions, fake_reading, fake_conversation, sent = _wire(
+    fake_users, fake_user_words, fake_grammar, fake_sessions, fake_reading, sent = _wire(
         monkeypatch, new_rows=new_rows, grammar_already_done=True
     )
     telegram_id = "903"

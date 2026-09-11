@@ -32,14 +32,6 @@ class FakeReadingProgressRepo:
         return {"total": self.total, "adequate": self.adequate}
 
 
-class FakeConversationProgressRepo:
-    def __init__(self, completed=0):
-        self.completed = completed
-
-    async def get_completed_session_count(self, user_id):
-        return self.completed
-
-
 def _wire(monkeypatch, **kwargs):
     fake_users = FakeUsersRepo()
     monkeypatch.setattr(router, "users_repo", fake_users)
@@ -50,7 +42,6 @@ def _wire(monkeypatch, **kwargs):
     monkeypatch.setattr(
         router, "reading_repo", FakeReadingProgressRepo(kwargs.get("reading_total", 0), kwargs.get("reading_adequate", 0))
     )
-    monkeypatch.setattr(router, "conversation_repo", FakeConversationProgressRepo(kwargs.get("conversation_completed", 0)))
     monkeypatch.setattr(router, "db_available", lambda: True)
 
     sent: list[tuple] = []
@@ -70,7 +61,6 @@ def test_progress_report_with_full_data(monkeypatch):
         weak_topics=["가정법"],
         reading_total=4,
         reading_adequate=2,
-        conversation_completed=1,
     )
     telegram_id = "1201"
     _setup_general_user(fake_users, telegram_id)
@@ -84,7 +74,6 @@ def test_progress_report_with_full_data(monkeypatch):
     assert "가정법" in report
     assert "4회 시도" in report
     assert "적절 판정 2회" in report
-    assert "완료한 세션 1회" in report
 
 
 def test_progress_report_handles_no_data_gracefully(monkeypatch):

@@ -25,9 +25,7 @@ class FakeUsersRepo:
             "placement_level": None,
             "daily_new_word_limit": 5,
             "word_band": 0,
-            "grammar_topic_index": 0,
             "reading_band": 0,
-            "conversation_level": 2,
             "target_use_case": None,
             "child_stage": 0,
             "created_at": "now",
@@ -59,14 +57,8 @@ class FakeUsersRepo:
     async def set_word_band(self, telegram_id, band):
         self.users[telegram_id]["word_band"] = band
 
-    async def set_grammar_topic_index(self, telegram_id, index):
-        self.users[telegram_id]["grammar_topic_index"] = index
-
     async def set_reading_band(self, telegram_id, band):
         self.users[telegram_id]["reading_band"] = band
-
-    async def set_conversation_level(self, telegram_id, level):
-        self.users[telegram_id]["conversation_level"] = level
 
     async def touch_last_active(self, telegram_id):
         pass

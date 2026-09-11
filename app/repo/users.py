@@ -58,25 +58,11 @@ async def set_word_band(telegram_id: str, band: int) -> None:
             await cur.execute("update users set word_band = %s where telegram_id = %s", (band, telegram_id))
 
 
-async def set_conversation_level(telegram_id: str, level: int) -> None:
-    pool = get_pool()
-    async with pool.connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute("update users set conversation_level = %s where telegram_id = %s", (level, telegram_id))
-
-
 async def set_reading_band(telegram_id: str, band: int) -> None:
     pool = get_pool()
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute("update users set reading_band = %s where telegram_id = %s", (band, telegram_id))
-
-
-async def set_grammar_topic_index(telegram_id: str, index: int) -> None:
-    pool = get_pool()
-    async with pool.connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute("update users set grammar_topic_index = %s where telegram_id = %s", (index, telegram_id))
 
 
 async def set_child_stage(telegram_id: str, stage: int) -> None:
@@ -143,10 +129,6 @@ async def list_approved_users_with_activity() -> list[dict[str, Any]]:
                                   where g.user_id = u.id and g.answered_at::date = current_date), 0)
                         + coalesce((select count(*) from user_reading_attempts r
                                     where r.user_id = u.id and r.attempted_at::date = current_date), 0)
-                        + coalesce((select count(*) from conversation_messages cm
-                                    join conversation_sessions cs on cs.id = cm.session_id
-                                    where cs.user_id = u.id and cm.role = 'user'
-                                      and cm.created_at::date = current_date), 0)
                         + coalesce((select count(*) from user_words w
                                     where w.user_id = u.id and w.last_reviewed_at::date = current_date), 0)
                     ) as today_activity_count

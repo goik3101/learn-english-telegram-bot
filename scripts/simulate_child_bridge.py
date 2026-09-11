@@ -1,7 +1,7 @@
 """CHILD_BRIDGE 모드(M14, 11세)를 실제 DB/실제 Gemini로 자동 시뮬레이션 (1회성 스크립트).
 
 이미 승인된 GENERAL 사용자(관리자)와 별개로, 나이 11 -> CHILD_BRIDGE 모드로 신규 가입하는
-가상의 텔레그램 ID로 진행한다. 단어학습/문법학습/해석/회화가 CHILD_BRIDGE 전용 콘텐츠로
+가상의 텔레그램 ID로 진행한다. 단어학습/문법학습/해석이 CHILD_BRIDGE 전용 콘텐츠로
 동작하는지, 톤이 실제로 어린이 친화적으로 나오는지 확인한다.
 """
 
@@ -146,17 +146,10 @@ async def main() -> None:
         print("=== 해석 피드백(1차, 힌트여야 함) ===")
         print("\n".join(m["text"] for m in captured)[:300])
 
-        # 2차 시도(반드시 공개되도록) 제출 -> 해석 세션을 정상 종료시켜 이후 "/회화" 입력이
-        # 남은 해석 세션의 재시도로 오인되지 않도록 한다.
+        # 2차 시도(반드시 공개되도록) 제출 -> 해석 세션을 정상 종료시킨다.
         await _send_text("우리 집 강아지 버디는 마당에서 노는 것을 좋아해요.")
         print("=== 해석 피드백(2차, 모범번역 공개되며 종료) ===")
         print("\n".join(m["text"] for m in captured)[:300])
-
-        # 4) 회화(Conversation) — 오프닝 톤 확인 (실시간 AI 호출)
-        await _send_text("/회화")
-        conv_texts = "\n".join(m["text"] for m in captured)
-        print("=== 회화 오프닝 ===")
-        print(conv_texts[:300])
 
         print("\n=== 모두 통과 ===")
     finally:

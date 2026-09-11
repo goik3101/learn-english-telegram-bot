@@ -120,7 +120,12 @@ async def get_word_ids(words: list[str], learning_mode: str = "GENERAL") -> dict
             return {row["word"]: row["id"] for row in rows}
 
 
-async def insert_grammar_questions(level: str, questions: list[dict], learning_mode: str = "GENERAL") -> int:
+async def insert_grammar_questions(
+    level: str, questions: list[dict], learning_mode: str = "GENERAL", part_id: int | None = None
+) -> int:
+    """part_id가 주어지면(CEFR 파트 기반 커리큘럼, scripts/generate_grammar_curriculum.py) 그 파트에
+    문제를 연결한다. 각 질문 dict의 error_type(있으면)도 함께 저장한다 — 오답 시 그 유형을 우선
+    재출제하기 위한 세분화된 태그(topic보다 좁음, 특히 exam_focus 카테고리에서 유용)."""
     if not questions:
         return 0
 
@@ -132,8 +137,9 @@ async def insert_grammar_questions(level: str, questions: list[dict], learning_m
                 await cur.execute(
                     """
                     insert into grammar_questions
-                        (level, topic, concept_intro, prompt, choices, correct_index, explanation, learning_mode)
-                    values (%s, %s, %s, %s, %s, %s, %s, %s)
+                        (level, topic, concept_intro, prompt, choices, correct_index, explanation, learning_mode,
+                         part_id, error_type)
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         level,
@@ -144,6 +150,8 @@ async def insert_grammar_questions(level: str, questions: list[dict], learning_m
                         q["correct_index"],
                         q["explanation"],
                         learning_mode,
+                        part_id,
+                        q.get("error_type"),
                     ),
                 )
                 inserted += 1
@@ -251,10 +259,13 @@ async def get_words_by_ids(word_ids: list[int]) -> list[dict]:
             return await cur.fetchall()
 
 
-async def insert_reading_passage_returning_id(level: str, passage: dict, learning_mode: str = "GENERAL") -> int:
-    """오늘의 주제 통합 학습: 하루 1회, 오늘의 단어 풀 제약으로 생성한 지문을 넣고 id를 바로 받는다
-    (bulk용 insert_reading_passages와 달리, learning_sessions.today_reading_passage_id로 캐싱하려면
-    id가 필요하다)."""
+async def insert_reading_passage_returning_id(
+    level: str, passage: dict, learning_mode: str = "GENERAL", source_grammar_part_id: int | None = None
+) -> int:
+    """오늘의 주제 통합 학습: 하루 1회, 오늘의 단어 풀 + 오늘 학습 중인 grammar_part 제약으로 생성한
+    지문을 넣고 id를 바로 받는다(bulk용 insert_reading_passages와 달리, learning_sessions.
+    today_reading_passage_id로 캐싱하려면 id가 필요하다). source_grammar_part_id는 재사용/디버깅용
+    참조 — 이 지문이 어떤 문법 파트를 기반으로 생성됐는지 남긴다."""
     pool = get_pool()
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
@@ -262,8 +273,9 @@ async def insert_reading_passage_returning_id(level: str, passage: dict, learnin
                 """
                 insert into reading_passages
                     (level, passage_text, model_translation_ko, learning_mode,
-                     avg_sentence_length, vocab_level, grammar_complexity, difficulty_band)
-                values (%s, %s, %s, %s, %s, %s, %s, %s)
+                     avg_sentence_length, vocab_level, grammar_complexity, difficulty_band,
+                     source_grammar_part_id)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 returning id
                 """,
                 (
@@ -275,6 +287,7 @@ async def insert_reading_passage_returning_id(level: str, passage: dict, learnin
                     passage.get("vocab_level"),
                     passage.get("grammar_complexity"),
                     passage.get("difficulty_band"),
+                    source_grammar_part_id,
                 ),
             )
             row = await cur.fetchone()

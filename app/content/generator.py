@@ -435,6 +435,88 @@ async def generate_grammar_questions_for_topic(
     return valid
 
 
+_GRAMMAR_PART_PROMPT_TEMPLATE = """너는 영어 문법 문제 출제자다. {level}({level_desc}) 난이도(CEFR {cefr_level})로, 반드시
+아래 하나의 세부 문법 포인트에 대해서만 4지선다 객관식 문제 {count}개를 만들어라 (다른 문법 포인트는 섞지 마라).
+
+문법 토픽: {topic}
+이번에 다룰 세부 포인트: {part_name} — {part_description}
+{previous_part_note}
+학습자가 문제를 풀기 전에 해당 문법 개념을 먼저 이해할 수 있도록, 각 문제마다 짧은 개념 설명(concept_intro)도 함께 만들어라.
+""" + _CONCEPT_INTRO_STYLE_INSTRUCTION + """
+또한 각 문제에는 오답 유형 태그(error_type)를 붙여라 — "{part_name}" 안에서도 실수하는 지점을 더 세밀하게
+구분하는 짧은 한국어 태그다(예: "부정어 도치_Never 위치 오류", "강조구문_가주어와 구별 실패"). 문제마다 서로 다른
+오답 포인트를 다루도록 다양하게 만들어라(같은 태그 반복 지양).
+또한 문제 문장(prompt)에 등장하는 단어 중 학습자가 몰라서 문법 이해를 방해할 만한 핵심 단어를 2~4개 뽑아 key_vocabulary로 제공하라
+(문법과 무관한 쉬운 단어는 제외, 각 단어는 문법 문제와 같은 {level} 난이도 기준).
+{tone_note}아래 JSON 배열 형식으로만 응답하고, 다른 설명은 절대 추가하지 마라. correct_index는 0부터 시작하는 정수다.
+[
+  {{
+    "topic": "{topic}",
+    "error_type": "이 문제가 다루는 세부 오답 유형 태그",
+    "concept_intro": "본 문제를 풀기 전에 보여줄 해당 문법 개념에 대한 2~3문장 한국어 설명",
+    "prompt": "빈칸이 ___ 로 표시된 영어 문장",
+    "choices": ["선택지1", "선택지2", "선택지3", "선택지4"],
+    "correct_index": 0,
+    "explanation": "정답 이유에 대한 한국어 설명",
+    "key_vocabulary": [
+      {{
+        "word": "영어단어",
+        "meaning_ko": "한국어 뜻",
+        "part_of_speech": "품사",
+        "pronunciation": "IPA 발음기호",
+        "example_sentence": "위 문제 문장을 그대로 사용해도 됨",
+        "example_translation": "예문의 한국어 해석"
+      }}
+    ]
+  }}
+]"""
+
+
+async def generate_grammar_questions_for_part(
+    cefr_level: str,
+    legacy_level: str,
+    topic: str,
+    part_name: str,
+    part_description: str,
+    count: int,
+    learning_mode: str = "GENERAL",
+    previous_part_label: str | None = None,
+) -> list[dict]:
+    """CEFR 파트 기반 커리큘럼(app/grammar/curriculum_data.py)의 파트 하나에 대해서만 생성.
+
+    previous_part_label(바로 앞 파트, 같은 토픽 안이거나 이전 토픽의 마지막 파트)을 주면 사용자
+    피드백 반영: "이미 통과한 표현과 비교해서 한 단계 더 나간 표현"이라는 식으로 연결해 설명하게 한다
+    — generate_grammar_questions_for_topic의 previous_topic 연결과 같은 원리를 파트 단위로 적용.
+    """
+    previous_part_note = (
+        f"학습자는 바로 앞 단계인 '{previous_part_label}'를 이미 통과했다 — 가능하면 그 표현과 비교해서 "
+        f"\"'{previous_part_label}'에서 한 단계 더 나간 표현\"이라는 식으로 연결해서 설명하라.\n"
+        if previous_part_label
+        else ""
+    )
+    prompt = _GRAMMAR_PART_PROMPT_TEMPLATE.format(
+        level=legacy_level,
+        level_desc=LEVEL_DESCRIPTIONS[legacy_level],
+        cefr_level=cefr_level,
+        count=count,
+        topic=topic,
+        part_name=part_name,
+        part_description=part_description,
+        previous_part_note=previous_part_note,
+        tone_note=tone_note(learning_mode),
+    )
+    raw = await generate_json(prompt)
+    items = _parse_json_array(raw)
+    valid = [item for item in items if _is_valid_grammar(item)]
+    if len(valid) < len(items):
+        logger.warning("dropped %d malformed grammar items for part %s", len(items) - len(valid), part_name)
+
+    for item in valid:
+        item["topic"] = topic
+        item["key_vocabulary"] = _valid_key_vocabulary(item.get("key_vocabulary"))
+    return valid
+
+
 async def generate_reading_passages(level: str, count: int, learning_mode: str = "GENERAL") -> list[dict]:
     prompt = _READING_PROMPT_TEMPLATE.format(
         level=level, level_desc=LEVEL_DESCRIPTIONS[level], count=count, tone_note=tone_note(learning_mode)
@@ -481,15 +563,26 @@ async def generate_reading_passage_for_words(
     words: list[str],
     mastered_grammar_topics: list[str],
     learning_mode: str = "GENERAL",
+    current_part_name: str | None = None,
+    current_part_description: str | None = None,
 ) -> list[dict]:
-    """오늘의 주제 통합 학습: 오늘의 단어 풀 + 이미 숙달한 문법 범위 안에서만 지문을 생성한다
-    (하루 1회, app/handlers/router.py에서 learning_sessions에 캐싱해 재사용)."""
+    """오늘의 주제 통합 학습: 오늘의 단어 풀 + 이미 노출된 문법 범위 안에서만 지문을 생성한다
+    (하루 1회, app/handlers/router.py에서 learning_sessions에 캐싱해 재사용).
+
+    해석을 문법 학습과 통합(사용자 요청): current_part_name/description을 주면(오늘 학습 중인
+    grammar_part) 그 문법 포인트를 지문에 최소 1문장 이상 자연스럽게 녹여 넣도록 요청한다 —
+    단순히 "안 넘게" 제한하는 것을 넘어, 방금 배운 표현을 실제로 다시 만나 복습하게 한다."""
     grammar_note = (
         f"- 문장 구조는 학습자가 이미 배운 다음 문법 범위를 넘지 않게 하라: {', '.join(mastered_grammar_topics)}. "
         "아직 배우지 않은 더 어려운 문법 구조(예: 가정법, 도치구문 등 위 목록에 없는 것)는 쓰지 마라.\n"
         if mastered_grammar_topics
         else "- 문장 구조는 최대한 단순하게(기초 문법 범위 안에서) 유지하라.\n"
     )
+    if current_part_name:
+        grammar_note += (
+            f"- 오늘 학습한 문법 포인트는 '{current_part_name}'({current_part_description or ''})이다. "
+            "지문 안에 이 문법이 실제로 쓰인 문장을 최소 1개 이상 자연스럽게 포함시켜라(억지스럽지 않게).\n"
+        )
     prompt = _TOPIC_READING_PROMPT_TEMPLATE.format(
         level=level,
         level_desc=LEVEL_DESCRIPTIONS[level],

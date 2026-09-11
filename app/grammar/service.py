@@ -10,6 +10,8 @@ class GrammarQuestion:
     choices: list[str]
     correct_index: int
     explanation: str | None
+    part_id: int | None = None
+    error_type: str | None = None
 
 
 @dataclass
@@ -70,6 +72,7 @@ def submit_answer(telegram_id: str, question_id: int, choice_index: int) -> Answ
             question=item,
             finished=False,
             next_question=session.items[session.index],
+            is_review=session.is_review,
         )
 
     total = len(session.items)

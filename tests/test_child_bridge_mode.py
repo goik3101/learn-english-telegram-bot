@@ -1,12 +1,12 @@
 from app.content.generator import tone_note
 from app.handlers import router
 from app.modes import determine_learning_mode
-from tests.test_conversation_flow import FakeContentRepo, _complete_topic_word_preview
 from tests.test_grammar_flow import FakeGrammarRepo, _question_row
 from tests.test_reading_flow import FakeReadingRepo, _passage_row
 from tests.test_router import FakeUsersRepo, run
 from tests.test_vocab_flow import (
     FakeContentGenerator,
+    FakeContentRepo,
     FakeLearningSessionsRepo,
     FakeUserWordsRepo,
     _word_row,
@@ -147,51 +147,3 @@ def test_reading_session_scopes_passage_to_child_bridge(monkeypatch):
     assert fake_reading.mode_calls == ["CHILD_BRIDGE"]
 
 
-def test_conversation_opening_passes_child_bridge_mode(monkeypatch):
-    fake_users = FakeUsersRepo()
-    fake_content = FakeContentRepo()
-    fake_user_words = FakeUserWordsRepo()
-    monkeypatch.setattr(router, "users_repo", fake_users)
-    monkeypatch.setattr(router, "content_repo", fake_content)
-    monkeypatch.setattr(router, "user_words_repo", fake_user_words)
-    monkeypatch.setattr(router, "learning_sessions_repo", FakeLearningSessionsRepo())
-    monkeypatch.setattr(router, "content_generator", FakeContentGenerator())
-    monkeypatch.setattr(router, "db_available", lambda: True)
-
-    calls: list[str] = []
-
-    async def fake_opening(level, learning_mode="GENERAL", conversation_level=2, extra_instruction="", topic=None, preview_words=None):
-        calls.append(learning_mode)
-        return "Hi! Let's practice English together! 🙂"
-
-    async def fake_create_session(user_id, level, topic=None, preview_word_ids=None):
-        return 1
-
-    async def fake_add_message(session_id, role, text):
-        pass
-
-    monkeypatch.setattr(router.conversation_chat, "generate_opening", fake_opening)
-    monkeypatch.setattr(router.conversation_repo, "create_session", fake_create_session)
-    monkeypatch.setattr(router.conversation_repo, "add_message", fake_add_message)
-    async def fake_has_completed_today(user_id):
-        return False
-
-    monkeypatch.setattr(router.conversation_repo, "has_completed_today", fake_has_completed_today)
-
-    sent: list[tuple] = []
-
-    async def fake_send(chat_id, text, reply_markup=None, parse_mode=None):
-        sent.append((chat_id, text))
-
-    async def fake_answer_cb(callback_query_id, text=None):
-        pass
-
-    monkeypatch.setattr(router, "send_message", fake_send)
-    monkeypatch.setattr(router, "answer_callback_query", fake_answer_cb)
-
-    telegram_id = "2005"
-    _setup_child_bridge_user(fake_users, telegram_id)
-    run(router.handle_update({"message": {"chat": {"id": 2005}, "text": "/회화"}}))
-    _complete_topic_word_preview(2005, fake_content.topic_word_rows)
-
-    assert calls == ["CHILD_BRIDGE"]

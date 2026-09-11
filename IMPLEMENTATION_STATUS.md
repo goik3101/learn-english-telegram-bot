@@ -487,3 +487,96 @@ sentencing" 같은 학술 어휘로 생성돼 기초 문법도 안 된 사용자
 
 - Docker Desktop이 로컬에 설치되어 있으나 실행 중이 아니어서 로컬 Postgres 컨테이너 방식은 시도하지 않음(대신 실제 Supabase로 바로 검증함).
 - Render(무료 티어)에 실제 배포 완료, webhook 등록(`scripts/set_webhook.py`)까지 진행됨 — 무료 티어 특성상 15분 미사용 시 슬립되어 첫 메시지 응답이 최대 50초 정도 느릴 수 있음(정상 동작).
+
+### M23 — 대규모 방향 전환: 회화 제거 + CEFR 기반 문법 파트 커리큘럼 재구성 (2026-09)
+
+사용자 요청(로드맵 이후 추가): 회화(Conversation) 기능을 완전히 제거하고, 리소스를 문법 학습에
+집중. 문법 학습 순서를 CEFR(유럽공통언어기준) 실증 데이터 기반으로 재구성하고, "5문제만 나가고
+다음 단계로 안 넘어가는" 실사용 버그를 근본 원인부터 해결.
+
+**1) 회화 완전 제거**
+- `app/conversation/*`(chat.py/service.py/difficulty.py), `app/repo/conversation.py` 삭제.
+- `app/handlers/router.py`에서 회화 관련 임포트/커맨드 라우팅(`/회화`)/콜백(`convfeedback:*`)/
+  `_start_conversation_session`/`_begin_conversation`/`_handle_conversation_message`/
+  `_maybe_advance_grammar_topic`의 회화 연동부/`_finish_vocab_word`의 회화 프리뷰 분기/오늘의학습
+  체이닝(`today_session.STAGES`에서 `"conversation"` 제거)/`/진도`의 회화 세션 카운트 전부 제거.
+- 메뉴(`app/menu.py`)에서 💬회화 버튼과 `/conversation` 명령 제거.
+- DB: [migrations/0025](migrations/0025_remove_conversation.sql)로 `conversation_sessions`/
+  `conversation_messages` 테이블과 `users.conversation_level` 컬럼 드롭. `topic_words`(구
+  `conversation_topic_words`)는 단어학습/해석이 계속 공유하므로 그대로 둠.
+- 테스트: `tests/test_conversation_flow.py`/`test_conversation_difficulty.py` 삭제,
+  `scripts/simulate_conversation.py` 삭제, 다른 테스트 파일들(`test_today_session.py`,
+  `test_daily_topic.py`, `test_child_bridge_mode.py`, `test_progress.py`, `test_router.py`)에서
+  회화 관련 fixture/assertion 제거.
+
+**2) 문법 커리큘럼을 CEFR 기반으로 재구성 + 파트(part) 단위로 세분화**
+
+기존(M20) 방식은 전역 순차 18-토픽 리스트(`app/grammar/curriculum.py`)였고, 토픽 하나를 통째로
+숙달 단위로 삼아 "최근 10문제 중 80%"를 요구했다. 신규 세트는 하루 1회·5문제로 제한돼 있어
+최소 이틀 이상 걸려야 다음 토픽으로 넘어갈 수 있었고, 이게 사용자에게 "5문제만 나가고 멈추는"
+것처럼 느껴진 근본 원인이었다.
+
+- `app/grammar/curriculum_data.py`: CEFR A1~C2 실증 카테고리를 빠짐없이 담은 **45개 토픽·129개
+  파트**를 직접 저작(특정 문법서 목차를 베끼지 않고 CEFR 공통 카테고리만 참고). 한국 학교 시험
+  (내신/수능) 빈출 6개 카테고리(도치구문/강조구문/분사구문/혼합가정법·조건문도치/화법전환/
+  관계사의 계속적 용법)는 `is_exam_focus=True`로 표시 — 순서는 그대로 두되(건너뛰지 않음)
+  콘텐츠 시딩 단계에서 파트당 문제 수를 12개(다른 카테고리는 6개)로 더 깊게 준비하도록 함.
+  `scripts/seed_grammar_curriculum.py`로 실행 후 코드에서 직접 카테고리 누락 여부를 스스로
+  점검함(관사/가산·불가산명사/구동사/간접의문문/생략구문 등 요청된 항목 전부 포함 확인, CEFR
+  레벨 순서가 A1→C2로 건너뛰지 않고 이어지는지도 확인).
+- DB: [migrations/0026](migrations/0026_grammar_cefr_parts.sql)로 `grammar_topics`/`grammar_parts`
+  (전역 절대 순서 `global_order_index`), `user_grammar_progress`(현재 토픽/파트 위치),
+  `user_grammar_part_progress`(파트별 status/attempt_count/correct_count) 테이블 신설.
+  `grammar_questions`에 `part_id`(FK)와 `error_type`(topic보다 세분화된 오답유형 태그) 컬럼 추가.
+  기존 `users.grammar_topic_index`는 의미가 완전히 달라져 드롭.
+- 숙달 판정(`app/grammar/mastery.py`, 순수 함수): **최소 5문제 시도 + 최근 5문제 정답률 80%
+  이상 → mastered(다음 파트로 진행)**, 50% 미만 → weak(같은 파트 반복, 다음 세션은
+  `get_weak_error_types_for_part`로 뽑은 취약 오답유형을 최대 70%까지 우선 재출제). 세션 크기가
+  5문제이므로 **하루 세션 하나만 정답으로 통과해도 즉시 다음 파트로 진행** — 이게 이번 재구성의
+  핵심 목적. `app/handlers/router.py`의 `_maybe_advance_grammar_part`가 정답/오답 매 응답마다
+  판정을 재계산해 세션 도중에도 즉시 반영한다(오답유형 우선 재출제·다음 파트 배정 모두 즉시성 확보).
+- "역행" 로직(`_maybe_regress_to_weak_mastered_part`): 전체 레벨이 높아 이미 숙달 처리된 파트라도
+  `/복습`에서 계속 틀리면(최근 5개 복습 응답 중 50% 미만) 그 파트를 다시 in_progress로 내리고,
+  현재 진행 위치가 그 파트보다 앞서 있으면 그 파트로 되돌린다 — "전체 레벨과 개별 파트 숙달도를
+  분리해서 관리"하라는 요청 반영.
+- 콘텐츠 생성(`app/content/generator.generate_grammar_questions_for_part`,
+  `scripts/generate_grammar_curriculum.py`): 파트 하나만 골라 생성하도록 프롬프트를 좁히고,
+  바로 앞 파트(`previous_part_label`)와 비교해서 "한 단계 더 나간 표현"이라는 식으로 설명하게 함
+  (M20에서 이미 도입한 concept_intro의 "친숙한 예시 먼저, 공식은 예문과 함께 풀어서 설명" 스타일
+  그대로 유지·재사용). 각 문제에 `error_type`(세분화된 오답유형) 태그도 함께 요청.
+- **완료조건 검증**: 실제 DB/Gemini 없이 pytest로 파트 기반 게이팅 로직을 철저히 시뮬레이션함
+  (`tests/test_grammar_difficulty.py`) — 현재 파트만 출제, 배치레벨이 높아도 첫 파트부터 시작,
+  콘텐츠 없는 파트를 다른 파트로 대체하지 않음, **단일 세션(5문제) 정답으로 즉시 다음 파트 진행**
+  (핵심 버그 수정 검증), 저성취 시 같은 파트 유지+취약유형 재출제, **여러 파트를 토픽 경계를
+  넘어 연속으로 통과시키는 멀티파트 시뮬레이션**(`test_multi_part_progression_across_topics_
+  never_gets_stuck`, 4개 파트 순차 완주하며 매 파트 정확한 파트로만 출제되는지 확인), 복습 중
+  숙달 파트 역행까지 전부 통과. 전체 pytest 146건 통과(회화 관련 24건 제거 포함).
+- **부수적으로 발견한 기존 버그 수정**: `app/grammar/service.py`의 `submit_answer`가 세션의
+  마지막 문항이 아닌 **중간 문항**에서는 `AnswerResult`의 `is_review`를 세팅하지 않아(dataclass
+  기본값 `False`로 샘) `/복습` 세션 중 마지막 문항을 제외한 모든 응답이 `user_grammar_answers.
+  is_review=false`로 잘못 기록되고 있었다. 파트 역행 테스트를 작성하다가 발견 — M23과 무관하게
+  이전부터 있던 버그이며, 이번에 함께 수정함(1줄 수정: `is_review=session.is_review` 추가).
+
+**3) 해석(Reading)을 문법 학습과 통합**
+- `_get_or_generate_today_reading_passage`가 오늘의 주제 단어 풀뿐 아니라 **사용자의 현재
+  grammar_part**를 조회해, 그 파트의 이름/설명을 프롬프트에 주입하고 "지문에 이 문법이 쓰인
+  문장을 최소 1개 이상 자연스럽게 포함시켜라"라고 요청한다(`generate_reading_passage_for_words`의
+  `current_part_name`/`current_part_description` 인자). "이미 노출된 문법 범위"를 넘지 않게
+  하는 기존 상한선(`get_topic_names_up_to`, 현재 파트까지의 토픽명 목록)은 그대로 유지.
+- 생성된 지문이 어떤 grammar_part를 기반으로 만들어졌는지 [migrations/0027](
+  migrations/0027_reading_grammar_part_reference.sql)의 `reading_passages.source_grammar_part_id`에
+  참조를 남김(재사용/디버깅용).
+
+**4) 검토했지만 변경하지 않은 항목(이미 충분히 구현돼 있었음)**
+- 단어 빈도(frequency_rank) 기반 난이도 밴드(M18) — 이미 6단계 밴드 구조와 최소10개+80%/50%
+  승급·강등 로직이 있고, `words.frequency_rank`는 콘텐츠 생성 시 Gemini에게 Oxford 3000/5000·
+  COCA 빈도자료를 참고해 추정하도록 요청 중(`estimate_frequency_ranks`). 그대로 유지.
+- 단어 암기 2단계 키워드 연상법+이모지+즉시 전체공개+오답 시 연상법 재노출(M21) — 이미 정확히
+  요청된 방식대로 구현돼 있어 변경 없음.
+- 메인 메뉴 버튼 + `/학습중단`(M20), 인라인 카드 자동삭제(초기 설계부터), 공백 없는 영문 명령어
+  등록(M6 이후) — 전부 이미 구현돼 있어 회화 버튼/명령만 제거하고 나머지는 그대로 둠.
+
+**아직 안 한 것(다음 단계, [HANDOFF.md](HANDOFF.md) 참고)**: 마이그레이션 0025~0027을 실제
+Supabase에 적용, `scripts/seed_grammar_curriculum.py`/`scripts/generate_grammar_curriculum.py`
+실행(AI 호출 필요 — 무료 티어 한도 고려해 `--start-index`/`--end-index`로 나눠 실행 권장),
+배포 서버 재배포, 실제 텔레그램으로 파트 진행이 실제로 멈추지 않는지 최종 확인.
