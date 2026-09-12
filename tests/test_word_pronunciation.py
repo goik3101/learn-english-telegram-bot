@@ -11,7 +11,7 @@ from tests.test_vocab_flow import (
 
 
 def _wire(monkeypatch, new_rows=None):
-    from tests.test_router import FakeUsersRepo
+    from tests.test_router import FakeUsersRepo, NullGrammarRepo
 
     fake_users = FakeUsersRepo()
     fake_user_words = FakeUserWordsRepo(new_rows=new_rows)
@@ -20,6 +20,7 @@ def _wire(monkeypatch, new_rows=None):
     monkeypatch.setattr(router, "learning_sessions_repo", FakeLearningSessionsRepo())
     monkeypatch.setattr(router, "content_repo", FakeContentRepo(topic_word_rows=new_rows))
     monkeypatch.setattr(router, "content_generator", FakeContentGenerator())
+    monkeypatch.setattr(router, "grammar_repo", NullGrammarRepo())
     monkeypatch.setattr(router, "db_available", lambda: True)
 
     sent: list[tuple] = []

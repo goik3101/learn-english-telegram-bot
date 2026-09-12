@@ -4,7 +4,11 @@ from typing import Any
 from app.db import get_pool
 
 
-async def get_due_review_words(user_id: int, today: date) -> list[dict[str, Any]]:
+async def get_due_review_words(user_id: int, today: date, limit: int | None = None) -> list[dict[str, Any]]:
+    """limit을 주면(app.srs.DAILY_REVIEW_LIMIT) 가장 오래 밀린 것부터 그만큼만 반환한다 —
+    복습 대상이 하루치를 훨씬 넘게 쌓여도(예: 테스트를 여러 날에 걸쳐 함) 한 번에 전부 쏟아지지
+    않게 하기 위함(사용자 버그리포트). 그날 못 나간 나머지는 next_review_date가 그대로라 다음날
+    다시 조회 시 자연히 최우선으로 다시 포함된다 — 데이터 유실 없음."""
     pool = get_pool()
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
@@ -17,8 +21,9 @@ async def get_due_review_words(user_id: int, today: date) -> list[dict[str, Any]
                 join words w on w.id = uw.word_id
                 where uw.user_id = %s and uw.next_review_date <= %s and uw.status != 'new'
                 order by uw.next_review_date
+                limit %s
                 """,
-                (user_id, today),
+                (user_id, today, limit),
             )
             return await cur.fetchall()
 

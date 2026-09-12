@@ -12,6 +12,7 @@ class GrammarQuestion:
     explanation: str | None
     part_id: int | None = None
     error_type: str | None = None
+    part_name: str | None = None
 
 
 @dataclass

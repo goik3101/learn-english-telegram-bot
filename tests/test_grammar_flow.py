@@ -26,18 +26,8 @@ class FakeGrammarRepo:
         self.mode_calls.append(learning_mode)
         return self.questions[:limit]
 
-    async def get_questions_for_topic(self, level, topic, limit, learning_mode="GENERAL"):
-        self.mode_calls.append(learning_mode)
-        return self.questions[:limit]
-
     async def get_questions_for_part(self, part_id, limit, learning_mode="GENERAL", prioritize_error_types=None):
         self.mode_calls.append(learning_mode)
-        return self.questions[:limit]
-
-    async def get_topic_accuracy_map(self, user_id, min_attempts=3):
-        return {}
-
-    async def get_weighted_review_questions(self, level, limit, learning_mode, weak_topics):
         return self.questions[:limit]
 
     async def has_completed_new_session_today(self, user_id):
@@ -85,6 +75,23 @@ class FakeGrammarRepo:
     async def get_topic_names_up_to(self, global_order_index):
         return []
 
+    async def get_encountered_topics_with_accuracy(self, user_id):
+        seen: list[str] = []
+        for q in self.questions:
+            if q["topic"] not in seen:
+                seen.append(q["topic"])
+        return [{"id": i, "name": name, "accuracy": None} for i, name in enumerate(seen)]
+
+    async def get_questions_for_encountered_topic(self, user_id, topic_id, limit, learning_mode="GENERAL"):
+        seen: list[str] = []
+        for q in self.questions:
+            if q["topic"] not in seen:
+                seen.append(q["topic"])
+        if topic_id >= len(seen):
+            return []
+        topic_name = seen[topic_id]
+        return [q for q in self.questions if q["topic"] == topic_name][:limit]
+
 
 def _question_row(qid, topic, prompt, choices, correct_index, explanation="설명", concept_intro="개념 설명"):
     return {
@@ -108,7 +115,7 @@ def _wire(monkeypatch, questions=None, already_done_today=False):
     sent: list[tuple] = []
 
     async def fake_send(chat_id, text, reply_markup=None, parse_mode=None):
-        sent.append((chat_id, text))
+        sent.append((chat_id, text, reply_markup))
 
     async def fake_answer_cb(callback_query_id, text=None):
         pass
@@ -120,6 +127,12 @@ def _wire(monkeypatch, questions=None, already_done_today=False):
     monkeypatch.setattr(router, "answer_callback_query", fake_answer_cb)
     monkeypatch.setattr(router, "delete_message", fake_delete_message)
     return fake_users, fake_grammar, sent
+
+
+def _button_labels(reply_markup) -> list[str]:
+    if not reply_markup or "inline_keyboard" not in reply_markup:
+        return []
+    return [btn["text"] for row in reply_markup["inline_keyboard"] for btn in row]
 
 
 def _callback_update(telegram_id: int, data: str) -> dict:
@@ -203,12 +216,18 @@ def test_admin_bypasses_daily_limit(monkeypatch):
 
 
 def test_review_command_allowed_even_if_new_session_done_today(monkeypatch):
+    """`/복습`은 이제 바로 문제를 내지 않고, 사용자가 실제로 학습한 적 있는 토픽을 먼저 선택하게
+    한다(사용자 요청 — 아직 안 배운 문법이 복습에 새어나오지 않도록)."""
     questions = [_question_row(5, "가정법", "If I ___ rich, I would travel.", ["am", "were", "was", "be"], 1)]
     fake_users, fake_grammar, sent = _wire(monkeypatch, questions=questions, already_done_today=True)
     telegram_id = "803"
     _setup_general_user(fake_users, telegram_id)
 
     run(router.handle_update({"message": {"chat": {"id": 803}, "text": "/복습"}}))
+    assert any("가정법" in label for label in _button_labels(sent[-1][2]))  # 선택 버튼에 토픽명이 표시됨
+
+    sent.clear()
+    run(router.handle_update(_callback_update(803, "reviewtopic:0")))
     assert "가정법" in sent[-1][1]
 
     sent.clear()

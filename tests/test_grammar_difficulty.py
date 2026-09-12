@@ -42,9 +42,7 @@ class FakeGrammarRepo:
         self.answers: list[tuple] = []  # (user_id, question_id, is_correct, error_tag, is_review)
         self.user_progress: dict[int, dict] = {}
         self.part_progress: dict[tuple, dict] = {}
-        self.topic_calls: list[str] = []
         self.part_question_calls: list[int] = []
-        self.review_calls: list[list[str]] = []
 
     def _question_by_id(self, question_id):
         if question_id in self.questions:
@@ -133,35 +131,37 @@ class FakeGrammarRepo:
             return all_q[:limit]
         return list(self.questions.values())[:limit]
 
-    async def get_questions_for_topic(self, level, topic, limit, learning_mode="GENERAL"):
-        self.topic_calls.append(topic)
-        return self.questions_by_topic.get(topic, [])[:limit]
+    # ── 복습(/복습): 실제로 답변한 적 있는(part_id 연결된) 토픽만 선택지로 제공 ────────
 
-    # ── 복습(/복습): 토픽 가중치 기반, 파트 여부와 무관 ─────────────────────
-
-    async def get_topic_accuracy_map(self, user_id, min_attempts=3):
-        by_topic: dict[str, list[bool]] = {}
-        for uid, qid, is_correct, _error_tag, is_review in self.answers:
+    async def get_encountered_topics_with_accuracy(self, user_id):
+        by_topic_id: dict[int, tuple[str, list[bool]]] = {}
+        for uid, qid, is_correct, _error_tag, _is_review in self.answers:
             if uid != user_id:
                 continue
             q = self._question_by_id(qid)
-            if q is None:
-                continue
-            by_topic.setdefault(q["topic"], []).append(is_correct)
-        return {topic: sum(r) / len(r) for topic, r in by_topic.items() if len(r) >= min_attempts}
+            part = self.parts.get(q.get("part_id")) if q else None
+            if part is None:
+                continue  # part_id 없는(구세대) 문제는 절대 복습 선택지에 새지 않는다
+            topic_id = part["topic_id"]
+            name, results = by_topic_id.setdefault(topic_id, (part["topic_name"], []))
+            results.append(is_correct)
+        return [
+            {"id": tid, "name": name, "accuracy": (sum(r) / len(r)) if r else None}
+            for tid, (name, r) in by_topic_id.items()
+        ]
 
-    async def get_weighted_review_questions(self, level, limit, learning_mode, weak_topics):
-        self.review_calls.append(weak_topics)
-        if weak_topics:
-            if self.questions_by_topic:
-                weak_q = [q for topic in weak_topics for q in self.questions_by_topic.get(topic, [])]
-            else:
-                weak_q = [q for q in self.questions.values() if q["topic"] in weak_topics]
-            return weak_q[:limit]
-        if self.questions_by_topic:
-            all_q = [q for qs in self.questions_by_topic.values() for q in qs]
-            return all_q[:limit]
-        return list(self.questions.values())[:limit]
+    async def get_questions_for_encountered_topic(self, user_id, topic_id, limit, learning_mode="GENERAL"):
+        encountered_part_ids = {
+            (self._question_by_id(qid) or {}).get("part_id")
+            for uid, qid, _is_correct, _error_tag, _is_review in self.answers
+            if uid == user_id
+        }
+        pool = [
+            q for q in self.questions.values()
+            if q.get("part_id") in encountered_part_ids
+            and self.parts.get(q.get("part_id"), {}).get("topic_id") == topic_id
+        ]
+        return pool[:limit]
 
     async def record_answer(self, user_id, question_id, is_correct, error_tag, is_review):
         self.answers.append((user_id, question_id, is_correct, error_tag, is_review))
@@ -177,7 +177,7 @@ def _wire(monkeypatch, parts=None, questions=None, questions_by_topic=None):
     sent: list[tuple] = []
 
     async def fake_send(chat_id, text, reply_markup=None, parse_mode=None):
-        sent.append((chat_id, text))
+        sent.append((chat_id, text, reply_markup))
 
     async def fake_answer_cb(callback_query_id, text=None):
         pass
@@ -189,6 +189,12 @@ def _wire(monkeypatch, parts=None, questions=None, questions_by_topic=None):
     monkeypatch.setattr(router, "answer_callback_query", fake_answer_cb)
     monkeypatch.setattr(router, "delete_message", fake_delete_message)
     return fake_users, fake_grammar, sent
+
+
+def _button_labels(reply_markup) -> list[str]:
+    if not reply_markup or "inline_keyboard" not in reply_markup:
+        return []
+    return [btn["text"] for row in reply_markup["inline_keyboard"] for btn in row]
 
 
 def _setup_general_user(fake_users, telegram_id):
@@ -366,40 +372,76 @@ def test_review_regresses_to_weak_mastered_part(monkeypatch):
     assert fake_grammar.part_progress[(user_id, 1)]["status"] == "mastered"
     assert fake_grammar.user_progress[user_id]["current_part_id"] == 2
 
-    # 이후 /복습을 5번 새로 시작해 매번 그 세션의 첫 문제(항상 q1[0], 목록 순서가 고정적임)를
-    # 오답 처리한다 — 최근 5개 복습 응답이 전부 오답이 되어 역행 기준(50% 미만)을 충족시킨다.
+    # 이후 /복습 -> 토픽 선택(현재시제, topic_id=10) -> 그 세션의 첫 문제(항상 q1[0], 목록 순서가
+    # 고정적임)를 오답 처리하는 것을 5번 반복한다 — 최근 5개 복습 응답이 전부 오답이 되어 역행
+    # 기준(50% 미만)을 충족시킨다.
     first_question_id = q1[0]["id"]
     for _ in range(5):
         run(router.handle_update({"message": {"chat": {"id": 9111}, "text": "🔁 복습"}}))
+        run(router.handle_update(_callback_update(9111, "reviewtopic:10")))
         run(router.handle_update(_callback_update(9111, f"grammar:{first_question_id}:1")))
 
     assert fake_grammar.part_progress[(user_id, 1)]["status"] == "in_progress"
     assert fake_grammar.user_progress[user_id]["current_part_id"] == 1  # 되돌아감
 
 
-def test_review_weights_weak_topics(monkeypatch):
-    questions_by_topic = {
-        "현재시제": [_question_row(1, "현재시제", "Q", ["a", "b", "c", "d"], 0) for _ in range(1)],
-        "과거시제": [_question_row(2, "과거시제", "Q", ["a", "b", "c", "d"], 0) for _ in range(1)],
-    }
-    fake_users, fake_grammar, sent = _wire(monkeypatch, questions_by_topic=questions_by_topic)
-    telegram_id = "9104"
+def test_review_only_lists_topics_actually_encountered(monkeypatch):
+    """사용자 요청: /복습에 아직 배우지도 않은 문법(예: 가정법)이 새어나오면 안 된다 — 실제로
+    답변한 적 있는(part_id로 연결된) 토픽만 선택지로 나와야 한다."""
+    parts = [
+        _part(1, 10, "현재시제", "3인칭단수 -s", 0),
+        _part(2, 20, "가정법", "2형 조건문", 1),
+    ]
+    questions = [
+        _part_question(1, 1, "현재시제", "She ___ to school.", ["go", "goes", "going", "went"], 1),
+        _part_question(2, 2, "가정법", "If I ___ rich...", ["am", "were", "was", "be"], 1),
+    ]
+    fake_users, fake_grammar, sent = _wire(monkeypatch, parts=parts, questions=questions)
+    telegram_id = "9112"
+    _setup_general_user(fake_users, telegram_id)
+    user_id = fake_users.users[telegram_id]["id"]
+
+    # 현재시제만 실제로 답변(=학습)했고, 가정법은 아직 만난 적 없다.
+    fake_grammar.answers = [(user_id, 1, True, None, False)]
+
+    run(router.handle_update({"message": {"chat": {"id": 9112}, "text": "🔁 복습"}}))
+
+    labels = _button_labels(sent[-1][2])
+    assert any("현재시제" in label for label in labels)
+    assert not any("가정법" in label for label in labels)  # 아직 안 배운 토픽은 절대 선택지에 없어야 함
+
+
+def test_review_shows_message_when_nothing_learned_yet(monkeypatch):
+    fake_users, fake_grammar, sent = _wire(monkeypatch, parts=[_part(1, 10, "현재시제", "현재형", 0)], questions=[])
+    telegram_id = "9113"
     _setup_general_user(fake_users, telegram_id)
 
-    # "과거시제"에서 오답 기록을 4개 쌓아 정답률을 낮춘다(가짜 question_id 재사용, 실제 문항 존재 불필요).
-    fake_grammar.answers = [(1, 2, False, "과거시제", False)] * 4
+    run(router.handle_update({"message": {"chat": {"id": 9113}, "text": "🔁 복습"}}))
 
-    run(router.handle_update({"message": {"chat": {"id": 9104}, "text": "🔁 복습"}}))
-
-    assert fake_grammar.review_calls == [["과거시제"]]
+    assert "아직 복습할 수 있는 문법이 없습니다" in sent[-1][1]
 
 
-def test_review_falls_back_to_random_without_weak_topics(monkeypatch):
-    questions_by_topic = {"현재시제": [_question_row(1, "현재시제", "Q", ["a", "b", "c", "d"], 0)]}
-    fake_users, fake_grammar, sent = _wire(monkeypatch, questions_by_topic=questions_by_topic)
-    telegram_id = "9105"
+def test_review_topic_selection_only_shows_encountered_parts_of_that_topic(monkeypatch):
+    """같은 토픽 안에서도 아직 도달하지 않은 뒷 파트(예: be동사의 '과거형')는 새지 않아야 한다."""
+    parts = [
+        _part(1, 10, "be동사", "현재형(am/is/are)", 0),
+        _part(2, 10, "be동사", "과거형(was/were)", 1),
+    ]
+    questions = [
+        _part_question(1, 1, "be동사", "I ___ happy.", ["am", "is", "are", "be"], 0),
+        _part_question(2, 2, "be동사", "I ___ happy yesterday.", ["am", "was", "were", "be"], 1),
+    ]
+    fake_users, fake_grammar, sent = _wire(monkeypatch, parts=parts, questions=questions)
+    telegram_id = "9114"
     _setup_general_user(fake_users, telegram_id)
+    user_id = fake_users.users[telegram_id]["id"]
 
-    run(router.handle_update({"message": {"chat": {"id": 9105}, "text": "🔁 복습"}}))
+    # 파트1(현재형)만 답변했고, 파트2(과거형)는 아직 만난 적 없다.
+    fake_grammar.answers = [(user_id, 1, True, None, False)]
 
-    assert fake_grammar.review_calls == [[]]
+    run(router.handle_update({"message": {"chat": {"id": 9114}, "text": "🔁 복습"}}))
+    sent.clear()
+    run(router.handle_update(_callback_update(9114, "reviewtopic:10")))
+
+    assert "happy." in sent[-1][1] or "happy" in sent[-1][1]
+    assert "yesterday" not in sent[-1][1]  # 아직 안 배운 과거형 파트 문제가 새지 않음

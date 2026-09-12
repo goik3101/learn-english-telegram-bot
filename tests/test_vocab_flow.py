@@ -1,6 +1,6 @@
 from app.handlers import router
 from app.vocab import service as vocab_service
-from tests.test_router import FakeUsersRepo, run
+from tests.test_router import FakeUsersRepo, NullGrammarRepo, run
 
 
 class FakeUserWordsRepo:
@@ -14,8 +14,8 @@ class FakeUserWordsRepo:
         self.band_results: dict[int, list[bool]] = {}
         self.known_topic_words: list[dict] = []
 
-    async def get_due_review_words(self, user_id, today):
-        return self.due_rows
+    async def get_due_review_words(self, user_id, today, limit=None):
+        return self.due_rows[:limit] if limit is not None else self.due_rows
 
     async def get_new_words(self, user_id, level, limit, learning_mode="GENERAL", min_rank=None, max_rank=None):
         return self.new_rows[:limit]
@@ -152,6 +152,7 @@ def _wire(monkeypatch, due_rows=None, new_rows=None, learned_rows=None):
     monkeypatch.setattr(router, "learning_sessions_repo", fake_learning_sessions)
     monkeypatch.setattr(router, "content_repo", fake_content)
     monkeypatch.setattr(router, "content_generator", FakeContentGenerator())
+    monkeypatch.setattr(router, "grammar_repo", NullGrammarRepo())
     monkeypatch.setattr(router, "db_available", lambda: True)
 
     sent: list[tuple] = []

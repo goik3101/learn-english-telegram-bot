@@ -1,5 +1,5 @@
 from app.handlers import router
-from tests.test_router import FakeUsersRepo, run
+from tests.test_router import FakeUsersRepo, NullGrammarRepo, run
 from tests.test_vocab_flow import (
     FakeContentGenerator,
     FakeContentRepo,
@@ -59,6 +59,7 @@ def _wire(monkeypatch, passage_rows_by_band=None):
     monkeypatch.setattr(router, "learning_sessions_repo", FakeLearningSessionsRepo())
     monkeypatch.setattr(router, "content_repo", FakeContentRepo())
     monkeypatch.setattr(router, "content_generator", FakeContentGenerator())
+    monkeypatch.setattr(router, "grammar_repo", NullGrammarRepo())
     monkeypatch.setattr(router, "db_available", lambda: True)
 
     sent: list[tuple] = []

@@ -74,6 +74,26 @@ class FakeUsersRepo:
         ]
 
 
+class NullGrammarRepo:
+    """문법과 무관한 플로우(단어/해석 등) 테스트용 최소 스텁 — `_get_effective_content_level`이
+    오늘의 단어/해석 난이도를 사용자의 CEFR 문법 진행 상황에서 유도하려고 grammar_repo를 참조하기
+    시작하면서(버그리포트: 배치레벨과 문법 진행이 어긋나 지문이 엉뚱하게 어려워지던 문제 수정),
+    문법 자체를 다루지 않는 테스트에도 이 의존성이 크래시 없이 필요해졌다. 항상 '커리큘럼 시작
+    전'으로 응답해 placement_level 폴백 경로를 타게 한다."""
+
+    async def get_user_progress(self, user_id):
+        return None
+
+    async def get_first_part(self):
+        return None
+
+    async def get_part_by_id(self, part_id):
+        return None
+
+    async def set_user_progress(self, user_id, topic_id, part_id):
+        pass
+
+
 class FakePlacementRepo:
     def __init__(self):
         self.saved: list[tuple] = []

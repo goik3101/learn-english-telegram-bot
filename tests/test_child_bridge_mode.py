@@ -3,7 +3,7 @@ from app.handlers import router
 from app.modes import determine_learning_mode
 from tests.test_grammar_flow import FakeGrammarRepo, _question_row
 from tests.test_reading_flow import FakeReadingRepo, _passage_row
-from tests.test_router import FakeUsersRepo, run
+from tests.test_router import FakeUsersRepo, NullGrammarRepo, run
 from tests.test_vocab_flow import (
     FakeContentGenerator,
     FakeContentRepo,
@@ -114,6 +114,7 @@ def test_vocab_new_words_query_uses_child_bridge_mode(monkeypatch):
     monkeypatch.setattr(router, "content_repo", RecordingContentRepo(topic_word_rows=new_rows))
     monkeypatch.setattr(router, "learning_sessions_repo", FakeLearningSessionsRepo())
     monkeypatch.setattr(router, "content_generator", FakeContentGenerator())
+    monkeypatch.setattr(router, "grammar_repo", NullGrammarRepo())
     monkeypatch.setattr(router, "db_available", lambda: True)
 
     async def fake_send(chat_id, text, reply_markup=None, parse_mode=None):

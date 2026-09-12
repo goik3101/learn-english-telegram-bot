@@ -9,6 +9,12 @@ DEFAULT_DAILY_NEW_WORDS = 5
 MIN_DAILY_NEW_WORDS = 3
 MAX_DAILY_NEW_WORDS = 15
 
+# 버그리포트: SRS 복습 대상이 그동안 상한 없이 전부(due 전체) 나가서, 테스트를 여러 날에 걸쳐
+# 하다 보면 밀린 복습이 한 번에 50개 넘게 쌓여 "신규 10개인데 총 60개가 나온다"는 문제가 생겼다.
+# 복습도 하루 상한을 두되(오래 밀린 것부터 우선 소진), 그날 못 나간 나머지는 다음날로 자연히
+# 이월된다(next_review_date는 그대로라 순번만 밀림 — 데이터 유실 없음).
+DAILY_REVIEW_LIMIT = 10
+
 
 @dataclass(frozen=True)
 class SrsResult:

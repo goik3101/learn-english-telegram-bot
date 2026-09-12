@@ -1,7 +1,7 @@
 from app import difficulty
 from app.handlers import router
 from app.vocab import frequency as word_frequency
-from tests.test_router import FakeUsersRepo, run
+from tests.test_router import FakeUsersRepo, NullGrammarRepo, run
 from tests.test_vocab_flow import (
     FakeContentGenerator,
     FakeContentRepo,
@@ -65,6 +65,7 @@ def _wire(monkeypatch, new_rows=None):
     monkeypatch.setattr(router, "learning_sessions_repo", FakeLearningSessionsRepo())
     monkeypatch.setattr(router, "content_repo", FakeContentRepo(topic_word_rows=new_rows))
     monkeypatch.setattr(router, "content_generator", FakeContentGenerator())
+    monkeypatch.setattr(router, "grammar_repo", NullGrammarRepo())
     monkeypatch.setattr(router, "db_available", lambda: True)
 
     sent: list[tuple] = []
@@ -142,6 +143,7 @@ def test_word_band_does_not_change_for_due_review_words(monkeypatch):
     monkeypatch.setattr(router, "learning_sessions_repo", FakeLearningSessionsRepo())
     monkeypatch.setattr(router, "content_repo", FakeContentRepo())
     monkeypatch.setattr(router, "content_generator", FakeContentGenerator())
+    monkeypatch.setattr(router, "grammar_repo", NullGrammarRepo())
     monkeypatch.setattr(router, "db_available", lambda: True)
 
     async def fake_send(chat_id, text, reply_markup=None, parse_mode=None):
@@ -190,6 +192,7 @@ def test_vocab_session_fails_open_when_topic_word_generation_fails(monkeypatch):
     monkeypatch.setattr(router, "learning_sessions_repo", FakeLearningSessionsRepo())
     monkeypatch.setattr(router, "content_repo", FakeContentRepo(topic_word_rows=[]))
     monkeypatch.setattr(router, "content_generator", FakeContentGenerator())
+    monkeypatch.setattr(router, "grammar_repo", NullGrammarRepo())
     monkeypatch.setattr(router, "db_available", lambda: True)
 
     sent: list[tuple] = []

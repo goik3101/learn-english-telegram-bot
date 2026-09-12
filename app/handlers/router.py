@@ -13,6 +13,7 @@ from app.custom_text import extractor as custom_text_extractor
 from app.custom_text import feedback as custom_text_feedback
 from app.custom_text import service as custom_text_service
 from app.db import db_available
+from app.grammar import curriculum_data as grammar_curriculum_data
 from app.grammar import mastery as grammar_mastery
 from app.grammar import service as grammar_service
 from app.modes import determine_learning_mode
@@ -196,11 +197,11 @@ async def handle_update(update: dict) -> None:
         return
 
     if normalized_command in ("/문법학습", menu.GRAMMAR_STUDY, "/grammarstudy") and user["learning_mode"] in PLACEMENT_MODES:
-        await _start_grammar_session(telegram_id, chat_id, user, is_review=False)
+        await _start_grammar_session(telegram_id, chat_id, user)
         return
 
     if normalized_command in ("/복습", menu.REVIEW, "/review") and user["learning_mode"] in PLACEMENT_MODES:
-        await _start_grammar_session(telegram_id, chat_id, user, is_review=True)
+        await _start_review_topic_picker(telegram_id, chat_id, user)
         return
 
     if normalized_command in ("/해석", menu.READING, "/reading") and user["learning_mode"] in PLACEMENT_MODES:
@@ -361,6 +362,10 @@ async def _handle_callback_query(callback_query: dict) -> None:
         await _handle_grammar_answer(telegram_id, chat_id, int(parts[1]), int(parts[2]))
         return
 
+    if parts[0] == "reviewtopic" and len(parts) == 2:
+        await _start_grammar_review_for_topic(telegram_id, chat_id, int(parts[1]))
+        return
+
     if parts[0] == "examquiz" and len(parts) == 3:
         await _handle_school_assignment_exam_answer(telegram_id, chat_id, int(parts[1]), int(parts[2]))
         return
@@ -519,7 +524,7 @@ async def _handle_placement_answer(telegram_id: str, chat_id: int, question_id: 
 
 async def _build_vocab_queue(user) -> tuple[str, list[vocab_service.WordItem]]:
     today = date.today()
-    due_rows = await user_words_repo.get_due_review_words(user["id"], today)
+    due_rows = await user_words_repo.get_due_review_words(user["id"], today, limit=srs.DAILY_REVIEW_LIMIT)
     new_limit = user["daily_new_word_limit"] or srs.DEFAULT_DAILY_NEW_WORDS
     mode = user["learning_mode"]
 
@@ -880,8 +885,11 @@ async def _handle_vocab_quiz_answer(telegram_id: str, chat_id: int, word_id: int
 GRAMMAR_SESSION_SIZE = 5
 
 
-async def _start_grammar_session(telegram_id: str, chat_id: int, user, is_review: bool) -> bool:
-    if not is_review and user["role"] != "admin":  # 관리자는 하루 1회 제한 없이 계속 테스트 가능 (사용자 요청)
+async def _start_grammar_session(telegram_id: str, chat_id: int, user) -> bool:
+    """신규 세트(`/문법학습`). 복습(`/복습`)은 더 이상 여기서 다루지 않는다 — 사용자 요청(아직
+    안 배운 문법이 복습에 새어나오는 문제)으로, 실제로 학습한 적 있는 토픽을 사용자가 직접
+    선택하는 방식으로 바뀌었다: `_start_review_topic_picker`/`_start_grammar_review_for_topic` 참고."""
+    if user["role"] != "admin":  # 관리자는 하루 1회 제한 없이 계속 테스트 가능 (사용자 요청)
         already_done = await grammar_repo.has_completed_new_session_today(user["id"])
         if already_done:
             await send_message(
@@ -895,35 +903,29 @@ async def _start_grammar_session(telegram_id: str, chat_id: int, user, is_review
     mode = user["learning_mode"]
     current_part_label: str | None = None
 
-    # 개인 맞춤 난이도(문법): 복습은 취약 주제를 가중해서 출제(순차 게이팅과 무관, 기존과 동일).
-    # 신규 세트는 배치레벨과 무관한 CEFR 전역 순차 커리큘럼(app/grammar/curriculum_data.py)상
-    # "현재 파트만" 출제한다(토픽 하나가 너무 커서 숙달 기준에 영원히 도달 못하던 버그를 파트
-    # 단위로 잘게 쪼개 해결 — app/grammar/mastery.py 참고).
-    if is_review:
-        accuracy_map = await grammar_repo.get_topic_accuracy_map(user["id"])
-        weak_topics = [topic for topic, accuracy in accuracy_map.items() if accuracy < 0.7]
-        rows = await grammar_repo.get_weighted_review_questions(placement_level, GRAMMAR_SESSION_SIZE, mode, weak_topics)
+    # 배치레벨과 무관한 CEFR 전역 순차 커리큘럼(app/grammar/curriculum_data.py)상 "현재 파트만"
+    # 출제한다(토픽 하나가 너무 커서 숙달 기준에 영원히 도달 못하던 버그를 파트 단위로 잘게 쪼개
+    # 해결 — app/grammar/mastery.py 참고).
+    current_part = await _get_or_init_current_grammar_part(user["id"])
+    if current_part is None:
+        # 커리큘럼이 아직 시딩되지 않았거나(scripts/seed_grammar_curriculum.py 미실행) 전체를
+        # 다 마쳤음 — 레벨 전체에서 무작위로 계속 연습(자격을 갖췄으므로 안전).
+        rows = await grammar_repo.get_random_questions(placement_level, GRAMMAR_SESSION_SIZE, learning_mode=mode)
+        logger.info("grammar-selection: no current part (unseeded or curriculum complete), random fallback user_id=%s", user["id"])
     else:
-        current_part = await _get_or_init_current_grammar_part(user["id"])
-        if current_part is None:
-            # 커리큘럼이 아직 시딩되지 않았거나(scripts/seed_grammar_curriculum.py 미실행) 전체를
-            # 다 마쳤음 — 레벨 전체에서 무작위로 계속 연습(자격을 갖췄으므로 안전).
-            rows = await grammar_repo.get_random_questions(placement_level, GRAMMAR_SESSION_SIZE, learning_mode=mode)
-            logger.info("grammar-selection: no current part (unseeded or curriculum complete), random fallback user_id=%s", user["id"])
-        else:
-            current_part_label = f"{current_part['topic_name']} · {current_part['name']}"
-            weak_error_types = await grammar_repo.get_weak_error_types_for_part(user["id"], current_part["id"], 5)
-            rows = await grammar_repo.get_questions_for_part(
-                current_part["id"], GRAMMAR_SESSION_SIZE, learning_mode=mode,
-                prioritize_error_types=weak_error_types or None,
-            )
-            logger.info(
-                "grammar-selection: part:%s(global_index:%d,cefr:%s,exam_focus:%s) rows=%d weak_error_types=%s user_id=%s",
-                current_part["name"], current_part["global_order_index"], current_part["cefr_level"],
-                current_part["is_exam_focus"], len(rows), weak_error_types, user["id"],
-            )
-            # 콘텐츠가 없다고 다른(상위) 파트로 대체하면 순차 게이팅이 무너진다 — 절대 다른 파트로
-            # 새지 않고, 콘텐츠가 준비될 때까지 기다리게 한다.
+        current_part_label = f"{current_part['topic_name']} · {current_part['name']}"
+        weak_error_types = await grammar_repo.get_weak_error_types_for_part(user["id"], current_part["id"], 5)
+        rows = await grammar_repo.get_questions_for_part(
+            current_part["id"], GRAMMAR_SESSION_SIZE, learning_mode=mode,
+            prioritize_error_types=weak_error_types or None,
+        )
+        logger.info(
+            "grammar-selection: part:%s(global_index:%d,cefr:%s,exam_focus:%s) rows=%d weak_error_types=%s user_id=%s",
+            current_part["name"], current_part["global_order_index"], current_part["cefr_level"],
+            current_part["is_exam_focus"], len(rows), weak_error_types, user["id"],
+        )
+        # 콘텐츠가 없다고 다른(상위) 파트로 대체하면 순차 게이팅이 무너진다 — 절대 다른 파트로
+        # 새지 않고, 콘텐츠가 준비될 때까지 기다리게 한다.
 
     if not rows:
         message = (
@@ -938,6 +940,7 @@ async def _start_grammar_session(telegram_id: str, chat_id: int, user, is_review
         )
         return False
 
+    part_name = current_part["name"] if current_part else None
     items = [
         grammar_service.GrammarQuestion(
             question_id=row["id"],
@@ -949,14 +952,70 @@ async def _start_grammar_session(telegram_id: str, chat_id: int, user, is_review
             explanation=row["explanation"],
             part_id=row.get("part_id"),
             error_type=row.get("error_type"),
+            part_name=part_name,
         )
         for row in rows
     ]
-    first = grammar_service.start_session(telegram_id, items, is_review)
-    label = "복습" if is_review else "문법 학습"
-    await send_message(chat_id, f"{label}을 시작합니다. 총 {len(items)}문항, 버튼으로 답해주세요.")
+    first = grammar_service.start_session(telegram_id, items, is_review=False)
+    await send_message(chat_id, f"문법 학습을 시작합니다. 총 {len(items)}문항, 버튼으로 답해주세요.")
     await _send_grammar_question(chat_id, first)
     return True
+
+
+async def _start_review_topic_picker(telegram_id: str, chat_id: int, user) -> None:
+    """`/복습`: 사용자가 실제로 학습한 적 있는 토픽만 골라 보여준다(사용자 요청 — 예전에는 배치
+    레벨 전체에서 가중치로 자동 출제해서, 아직 배우지도 않은 가정법 같은 문법이 복습에 새어
+    나오는 문제가 있었음)."""
+    topics = await grammar_repo.get_encountered_topics_with_accuracy(user["id"])
+    if not topics:
+        await send_message(
+            chat_id,
+            "아직 복습할 수 있는 문법이 없습니다. 먼저 ✍️ 문법 학습을 진행해 주세요.",
+            reply_markup=menu.build_main_menu_keyboard(telegram_id == settings.admin_telegram_id),
+        )
+        return
+
+    buttons = []
+    for t in topics:
+        label = t["name"] if t["accuracy"] is None else f"{t['name']} ({t['accuracy']:.0%})"
+        buttons.append((label, f"reviewtopic:{t['id']}"))
+    keyboard = build_inline_keyboard(buttons, columns=1)
+    await send_message(chat_id, "복습할 문법 주제를 선택해주세요.", reply_markup=keyboard)
+
+
+async def _start_grammar_review_for_topic(telegram_id: str, chat_id: int, topic_id: int) -> None:
+    user = await users_repo.get_user_by_telegram_id(telegram_id)
+    if user is None:
+        return
+    mode = user["learning_mode"]
+
+    rows = await grammar_repo.get_questions_for_encountered_topic(user["id"], topic_id, GRAMMAR_SESSION_SIZE, mode)
+    if not rows:
+        await send_message(
+            chat_id,
+            "이 주제의 복습 문제를 찾을 수 없습니다.",
+            reply_markup=menu.build_main_menu_keyboard(telegram_id == settings.admin_telegram_id),
+        )
+        return
+
+    items = [
+        grammar_service.GrammarQuestion(
+            question_id=row["id"],
+            topic=row["topic"],
+            concept_intro=row["concept_intro"],
+            prompt=row["prompt"],
+            choices=row["choices"],
+            correct_index=row["correct_index"],
+            explanation=row["explanation"],
+            part_id=row.get("part_id"),
+            error_type=row.get("error_type"),
+            part_name=row.get("part_name"),
+        )
+        for row in rows
+    ]
+    first = grammar_service.start_session(telegram_id, items, is_review=True)
+    await send_message(chat_id, f"복습을 시작합니다. 총 {len(items)}문항, 버튼으로 답해주세요.")
+    await _send_grammar_question(chat_id, first)
 
 
 async def _get_or_init_current_grammar_part(user_id: int) -> dict | None:
@@ -972,17 +1031,45 @@ async def _get_or_init_current_grammar_part(user_id: int) -> dict | None:
     return first_part
 
 
+async def _get_effective_content_level(user) -> str:
+    """단어/해석(오늘의 주제 통합 학습)에 쓸 난이도.
+
+    버그리포트: 예전부터 `user["placement_level"]`(최초 1회 레벨진단 결과, beginner/intermediate/
+    advanced)을 그대로 썼는데, 문법은 배치레벨과 무관하게 항상 CEFR 커리큘럼 맨 처음(be동사)부터
+    시작한다(사용자 요청). 그 결과 배치레벨이 "advanced"로 나온 사용자가 문법은 be동사(A1)를
+    배우는 중인데 해석 지문/오늘의 단어는 "유학 준비생 학술 수준" 어휘로 생성되는 불일치가
+    실사용에서 확인됨. 이제 그날 실제로 진행 중인 CEFR 문법 단계에서 난이도를 유도하고,
+    커리큘럼이 아직 시작되지 않았을 때만 배치레벨로 폴백한다.
+    """
+    current_part = await _get_or_init_current_grammar_part(user["id"])
+    if current_part is not None:
+        return grammar_curriculum_data.CEFR_TO_LEGACY_LEVEL[current_part["cefr_level"]]
+    return user["placement_level"] or "beginner"
+
+
+def _grammar_topic_label(question: grammar_service.GrammarQuestion) -> str:
+    """버그리포트: 파트가 바뀌어도 화면에는 토픽명("be동사")만 보여서 "이미 배운 걸 또 보여준다"고
+    오인하기 쉬웠다 — 파트명까지 함께 보여준다(예: "[be동사 · 부정문·의문문]")."""
+    if question.topic and question.part_name:
+        return f"[{question.topic} · {question.part_name}]"
+    if question.topic:
+        return f"[{question.topic}]"
+    return ""
+
+
 async def _send_grammar_question(chat_id: int, question: grammar_service.GrammarQuestion) -> None:
+    label = _grammar_topic_label(question)
+
     # 개념 설명을 문제보다 먼저 보여준다 (확인질문 없이 바로 이어서, 섹션7 학습자동화 원칙).
     if question.concept_intro:
-        topic_label = f"[{question.topic}]\n" if question.topic else ""
-        await send_message(chat_id, f"{topic_label}{question.concept_intro}")
+        prefix = f"{label}\n" if label else ""
+        await send_message(chat_id, f"{prefix}{question.concept_intro}")
 
     keyboard = build_inline_keyboard(
         [(choice, f"grammar:{question.question_id}:{idx}") for idx, choice in enumerate(question.choices)],
         columns=1,
     )
-    prefix = f"[{question.topic}] " if question.topic else ""
+    prefix = f"{label} " if label else ""
     await send_message(chat_id, f"{prefix}{question.prompt}", reply_markup=keyboard)
 
 
@@ -1115,7 +1202,7 @@ async def _advance_today_session(telegram_id: str, chat_id: int, user) -> None:
     next_stage = today_session.advance(telegram_id)
 
     if next_stage == "grammar":
-        started = await _start_grammar_session(telegram_id, chat_id, user, is_review=False)
+        started = await _start_grammar_session(telegram_id, chat_id, user)
         if not started:
             # 오늘 이미 문법 학습을 했거나 문제가 없으면 건너뛰고 오늘의 학습을 마무리한다.
             await _advance_today_session(telegram_id, chat_id, user)
@@ -1151,18 +1238,25 @@ async def _get_or_generate_today_reading_passage(
         if passage:
             return passage
 
-    level = user["placement_level"] or "beginner"
     mode = user["learning_mode"]
+
+    # 문법은 이 주제 시스템과 무관하게 자기 순서(파트 단위 순차 진행+숙달기준)를 그대로 따르므로,
+    # 여기서는 "이미 노출된 문법 범위"만 상한선으로 참고한다(app/grammar/curriculum_data.py, 안 건드림).
+    # 해석을 문법 학습과 통합(사용자 요청): 오늘 학습 중인 grammar_part가 있으면 그 문법 포인트를
+    # 지문에 실제로 녹여 넣어 복습시키고, 어떤 파트를 기반으로 생성됐는지 참조를 남긴다. 난이도
+    # (level)도 배치레벨이 아니라 이 현재 파트의 CEFR 단계에서 유도한다(버그리포트: be동사를 막
+    # 배우는데 지문이 "advanced" 학술 어휘로 나오던 문제).
+    current_part = await _get_or_init_current_grammar_part(user["id"])
+    level = (
+        grammar_curriculum_data.CEFR_TO_LEGACY_LEVEL[current_part["cefr_level"]]
+        if current_part
+        else (user["placement_level"] or "beginner")
+    )
     known_rows = await user_words_repo.get_known_topic_words(user["id"], topic, level, mode)
     words = [r["word"] for r in topic_word_rows] + [r["word"] for r in known_rows]
     if not words:
         return None
 
-    # 문법은 이 주제 시스템과 무관하게 자기 순서(파트 단위 순차 진행+숙달기준)를 그대로 따르므로,
-    # 여기서는 "이미 노출된 문법 범위"만 상한선으로 참고한다(app/grammar/curriculum_data.py, 안 건드림).
-    # 해석을 문법 학습과 통합(사용자 요청): 오늘 학습 중인 grammar_part가 있으면 그 문법 포인트를
-    # 지문에 실제로 녹여 넣어 복습시키고, 어떤 파트를 기반으로 생성됐는지 참조를 남긴다.
-    current_part = await _get_or_init_current_grammar_part(user["id"])
     mastered_topics = (
         await grammar_repo.get_topic_names_up_to(current_part["global_order_index"]) if current_part else []
     )
@@ -1196,7 +1290,7 @@ async def _get_or_generate_today_reading_passage(
 
 
 async def _start_reading_session(telegram_id: str, chat_id: int, user, is_review: bool) -> bool:
-    level = user["placement_level"] or "beginner"
+    level = await _get_effective_content_level(user)
     mode = user["learning_mode"]
 
     topic, topic_word_rows = await _get_or_create_today_topic(user)
@@ -1319,7 +1413,7 @@ async def _get_or_create_today_topic(user) -> tuple[str, list[dict]]:
     1회만 정하고(learning_sessions에 캐싱), 이후 같은 날 재호출되면 그대로 재사용한다."""
     await learning_sessions_repo.start_today(user["id"])
     row = await learning_sessions_repo.get_today_row(user["id"])
-    level = user["placement_level"] or "beginner"
+    level = await _get_effective_content_level(user)
     mode = user["learning_mode"]
 
     if row and row.get("today_topic"):
