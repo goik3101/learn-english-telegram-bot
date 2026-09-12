@@ -161,6 +161,61 @@ def test_full_flow_start_approve_age_mode(monkeypatch):
     assert fake_users.users["222"]["age"] == 9
 
 
+def test_unhandled_exception_does_not_leave_user_without_a_reply(monkeypatch):
+    """개별 핸들러가 감싸지 않은 예외가 나면 예전엔 그 요청에 봇이 아무 응답도 안 보냈다.
+
+    최상위 handle_update의 try/except가 이를 잡아 최소한 안내 메시지는 보내는지 확인한다.
+    """
+    fake_users, _, sent = _wire(monkeypatch)
+
+    run(router.handle_update({"message": {"chat": {"id": 401}, "text": "/start"}}))
+    run(fake_users.approve_user("401"))
+    run(router.handle_update({"message": {"chat": {"id": 401}, "text": "/start"}}))
+    run(router.handle_update({"message": {"chat": {"id": 401}, "text": "20"}}))
+
+    async def boom(telegram_id):
+        raise RuntimeError("simulated unexpected failure")
+
+    monkeypatch.setattr(fake_users, "touch_last_active", boom)
+
+    sent.clear()
+    run(router.handle_update({"message": {"chat": {"id": 401}, "text": "/메뉴"}}))
+
+    assert sent, "예외가 나도 사용자에게 뭔가는 응답해야 한다(완전 무응답 금지)"
+    assert "오류" in sent[-1][1]
+
+
+def test_unhandled_exception_in_callback_still_notifies_user(monkeypatch):
+    fake_users, _, sent = _wire(monkeypatch)
+
+    run(router.handle_update({"message": {"chat": {"id": 402}, "text": "/start"}}))
+    run(fake_users.approve_user("402"))
+    run(router.handle_update({"message": {"chat": {"id": 402}, "text": "/start"}}))
+    run(router.handle_update({"message": {"chat": {"id": 402}, "text": "20"}}))
+
+    async def boom(callback_query_id, text=None):
+        raise RuntimeError("simulated unexpected failure")
+
+    monkeypatch.setattr(router, "answer_callback_query", boom)
+
+    sent.clear()
+    run(
+        router.handle_update(
+            {
+                "callback_query": {
+                    "id": "cb1",
+                    "data": "vocab:known:1",
+                    "from": {"id": 402},
+                    "message": {"chat": {"id": 402}, "message_id": 1},
+                }
+            }
+        )
+    )
+
+    assert sent, "콜백 처리 중 예외가 나도 사용자에게 뭔가는 응답해야 한다"
+    assert "오류" in sent[-1][1]
+
+
 def test_age_boundaries_map_to_expected_modes(monkeypatch):
     fake_users, _, sent = _wire(monkeypatch)
 

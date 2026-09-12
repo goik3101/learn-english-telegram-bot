@@ -9,6 +9,7 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
+TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 
 
 def spoiler_html(text: str) -> str:
@@ -33,15 +34,38 @@ async def _post(method: str, payload: dict) -> None:
             logger.error("Telegram %s failed (%s): %s", method, response.status_code, response.text)
 
 
+def _split_long_text(text: str, limit: int = TELEGRAM_MAX_MESSAGE_LENGTH) -> list[str]:
+    """텔레그램 메시지 4096자 제한을 넘는 텍스트(AI 생성 지문/설명 등)를 여러 메시지로 나눈다.
+
+    안 나누면 sendMessage가 400을 반환해 메시지 전체가 사용자에게 조용히 전달되지 않는다
+    (_post는 실패를 로그만 남기고 호출부에 알리지 않음).
+    """
+    if len(text) <= limit:
+        return [text]
+    chunks: list[str] = []
+    remaining = text
+    while len(remaining) > limit:
+        split_at = remaining.rfind("\n", 0, limit)
+        if split_at <= 0:
+            split_at = limit
+        chunks.append(remaining[:split_at])
+        remaining = remaining[split_at:].lstrip("\n")
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
 async def send_message(
     chat_id: int | str, text: str, reply_markup: Optional[dict] = None, parse_mode: Optional[str] = None
 ) -> None:
-    payload: dict = {"chat_id": chat_id, "text": text}
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
-    if parse_mode:
-        payload["parse_mode"] = parse_mode
-    await _post("sendMessage", payload)
+    chunks = _split_long_text(text)
+    for index, chunk in enumerate(chunks):
+        payload: dict = {"chat_id": chat_id, "text": chunk}
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        if reply_markup and index == len(chunks) - 1:
+            payload["reply_markup"] = reply_markup
+        await _post("sendMessage", payload)
 
 
 async def send_voice(chat_id: int | str, audio_bytes: bytes, caption: Optional[str] = None) -> None:

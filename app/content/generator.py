@@ -3,6 +3,7 @@ import logging
 from typing import Any
 
 from app.ai.gemini_client import generate_json
+from app.content import sentence_difficulty
 
 logger = logging.getLogger(__name__)
 
@@ -511,6 +512,22 @@ async def generate_grammar_questions_for_part(
     if len(valid) < len(items):
         logger.warning("dropped %d malformed grammar items for part %s", len(items) - len(valid), part_name)
 
+    # 문장 난이도 하드 제약(코드 레벨): 목표 문법 하나에 집중하라고 프롬프트로 요청해도, AI가
+    # 예문 문장 자체를 길게 늘어뜨리는 것까지는 못 막는다 — 레벨별 상한을 넘는 문장은 버린다
+    # (배치 생성이라 reading처럼 전체 재생성하지 않고, 기존 "깨진 항목 드롭" 패턴을 그대로 따름).
+    limits = sentence_difficulty.limits_for_level(legacy_level)
+    within_length = []
+    for item in valid:
+        longest = sentence_difficulty.longest_sentence_word_count(item["prompt"])
+        if longest > limits.max_words_per_sentence:
+            logger.warning(
+                "dropped grammar item for part %s: sentence too long (%d words > %d)",
+                part_name, longest, limits.max_words_per_sentence,
+            )
+            continue
+        within_length.append(item)
+    valid = within_length
+
     for item in valid:
         item["topic"] = topic
         item["key_vocabulary"] = _valid_key_vocabulary(item.get("key_vocabulary"))
@@ -591,9 +608,31 @@ async def generate_reading_passage_for_words(
         grammar_note=grammar_note,
         tone_note=tone_note(learning_mode),
     )
-    raw = await generate_json(prompt)
-    items = _parse_json_array(raw)
-    valid = [item for item in items if _is_valid_reading(item)]
-    if len(valid) < len(items):
-        logger.warning("dropped %d malformed topic reading items for topic %s", len(items) - len(valid), topic)
+    async def _generate_once() -> list[dict]:
+        raw = await generate_json(prompt)
+        items = _parse_json_array(raw)
+        valid = [item for item in items if _is_valid_reading(item)]
+        if len(valid) < len(items):
+            logger.warning("dropped %d malformed topic reading items for topic %s", len(items) - len(valid), topic)
+        return valid
+
+    valid = await _generate_once()
+    if not valid:
+        return valid
+
+    limits = sentence_difficulty.limits_for_level(level)
+    result = sentence_difficulty.validate(valid[0]["passage"], words, limits)
+    if not result.passed:
+        # 문장이 너무 길거나 목표 단어 목록 밖 단어가 너무 많다 — 프롬프트 지시만으로는 강제가
+        # 안 되므로(AI가 무시할 수 있음) 한 번 더 시도해 더 쉬운 쪽을 채택한다(완전히 막지는
+        # 않는다 — AI가 계속 못 지켜도 지문 자체가 아예 없는 것보다는 나으므로 fail-open 유지).
+        logger.warning(
+            "topic reading passage failed sentence-difficulty check for topic %s: %s — regenerating once",
+            topic, "; ".join(result.violations),
+        )
+        retry = await _generate_once()
+        if retry:
+            retry_result = sentence_difficulty.validate(retry[0]["passage"], words, limits)
+            if retry_result.passed or len(retry_result.violations) < len(result.violations):
+                return retry
     return valid

@@ -101,6 +101,23 @@ def _wire_grammar(monkeypatch, questions_by_topic=None):
     return fake_users, fake_grammar, sent
 
 
+def test_stop_learning_clears_placement_session(monkeypatch):
+    from app.placement import service as placement_service
+
+    fake_users, fake_user_words, sent = _wire_vocab(monkeypatch)
+    telegram_id = "8005"
+    _setup_general_user(fake_users, telegram_id)
+
+    run(router.handle_update({"message": {"chat": {"id": 8005}, "text": "/레벨진단"}}))
+    assert placement_service.has_active_session(telegram_id)
+
+    sent.clear()
+    run(router.handle_update({"message": {"chat": {"id": 8005}, "text": "/학습중단"}}))
+
+    assert not placement_service.has_active_session(telegram_id)
+    assert "중단" in sent[-1][1]
+
+
 def test_stop_learning_clears_grammar_session(monkeypatch):
     from app.grammar import service as grammar_service
 

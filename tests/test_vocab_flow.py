@@ -4,7 +4,7 @@ from tests.test_router import FakeUsersRepo, NullGrammarRepo, run
 
 
 class FakeUserWordsRepo:
-    def __init__(self, due_rows=None, new_rows=None, learned_rows=None):
+    def __init__(self, due_rows=None, new_rows=None, learned_rows=None, mastered_stats_by_user=None):
         self.due_rows = due_rows or []
         self.new_rows = new_rows or []
         self.learned_rows = learned_rows or []
@@ -13,6 +13,8 @@ class FakeUserWordsRepo:
         self.word_attempts: list[tuple] = []
         self.band_results: dict[int, list[bool]] = {}
         self.known_topic_words: list[dict] = []
+        # 사용자별로 다른 어휘 레벨을 시뮬레이션하고 싶을 때만 채운다: {user_id: (median_rank, count)}
+        self.mastered_stats_by_user: dict[int, tuple] = mastered_stats_by_user or {}
 
     async def get_due_review_words(self, user_id, today, limit=None):
         return self.due_rows[:limit] if limit is not None else self.due_rows
@@ -29,8 +31,15 @@ class FakeUserWordsRepo:
     async def get_distractor_meanings(self, level, exclude_word_id, count, learning_mode="GENERAL"):
         return self.distractor_pool[:count]
 
-    async def upsert_word_progress(self, user_id, word_id, status, ease, interval_days, next_review_date):
-        self.progress_calls.append((user_id, word_id, status, ease, interval_days, next_review_date))
+    async def get_mastered_word_stats(self, user_id):
+        return self.mastered_stats_by_user.get(user_id, (None, 0))  # 기본값: mastered 단어 없음
+
+    async def upsert_word_progress(
+        self, user_id, word_id, status, ease, interval_days, next_review_date, mastery, consecutive_correct, is_correct
+    ):
+        self.progress_calls.append(
+            (user_id, word_id, status, ease, interval_days, next_review_date, mastery, consecutive_correct, is_correct)
+        )
 
     async def get_learned_words_sample(self, user_id, limit):
         return self.learned_rows[:limit]
@@ -96,9 +105,11 @@ class FakeContentRepo:
         self.topic_word_rows = topic_word_rows or []
         self.inserted_words: list[tuple] = []
         self.linked: list[tuple] = []
+        self.get_topic_words_calls: list[tuple] = []
         self._next_id = 900
 
     async def get_topic_words(self, topic, level, learning_mode, limit):
+        self.get_topic_words_calls.append((topic, level, learning_mode, limit))
         return self.topic_word_rows[:limit]
 
     async def get_words_by_ids(self, word_ids):
@@ -190,7 +201,9 @@ def _callback_update(telegram_id: int, data: str) -> dict:
     }
 
 
-def _due_row(word_id, word, meaning_ko):
+def _due_row(word_id, word, meaning_ko, mastery="review", consecutive_correct=2):
+    """기본값(mastery="review")은 이미 학습단계를 졸업해 정규 SRS 사이클에 들어간 흔한 경우를
+    나타낸다 — 학습단계 중인 단어(재확인 대기)를 흉내내려면 mastery="learning_step_2" 등을 넘길 것."""
     return {
         "word_id": word_id,
         "word": word,
@@ -201,6 +214,8 @@ def _due_row(word_id, word, meaning_ko):
         "level": "beginner",
         "ease": 1.7,
         "interval_days": 2,
+        "mastery": mastery,
+        "consecutive_correct": consecutive_correct,
     }
 
 
@@ -269,9 +284,70 @@ def test_vocab_session_known_word_updates_srs_and_advances(monkeypatch):
     sent.clear()
     run(router.handle_update(_callback_update(601, "vocab:known:1")))
 
-    assert fake_user_words.progress_calls[0][1] == 1
-    assert fake_user_words.progress_calls[0][2] == "known"
+    call = fake_user_words.progress_calls[0]
+    word_id, status, ease, interval_days, _, mastery, consecutive_correct, is_correct = call[1:]
+    assert (word_id, status) == (1, "known")
     assert "book" in sent[-1][1]  # 다음 카드로 넘어감
+
+    # V2 학습 엔진 핵심 검증(가장 중요): 신규 단어에 [아는단어]를 눌러도 즉시 정규 SRS 장기
+    # 간격(ease배 성장)으로 들어가면 안 된다 — 학습단계(재확인 대기)로만 넘어가야 한다.
+    # srs.apply_correct(1, 1.7)를 곧장 썼다면 interval_days==2가 됐을 것 — 그게 아니라 학습단계
+    # 고정 간격(1일)이어야 한다.
+    assert mastery == "learning_step_2"
+    assert interval_days == 1
+    assert ease == 1.7
+    assert consecutive_correct == 1
+    assert is_correct is True
+
+
+def test_vocab_known_word_in_learning_step_2_graduates_to_real_srs_interval(monkeypatch):
+    """여러 번(최소 2번) 맞춘 뒤에만 기존 SRS의 긴 간격으로 넘어가는지 검증 — 학습단계 2단계까지
+    이미 통과한 단어(재확인 대기 중)가 다시 정답이면 그제서야 apply_correct(ease배 성장)로
+    넘어가야 한다."""
+    due_rows = [_due_row(70, "run", "달리다", mastery="learning_step_2", consecutive_correct=1)]
+    fake_users, fake_user_words, sent = _wire(monkeypatch, due_rows=due_rows)
+    telegram_id = "611"
+    _setup_general_user(fake_users, telegram_id)
+
+    run(router.handle_update({"message": {"chat": {"id": 611}, "text": "/단어학습"}}))
+    sent.clear()
+    run(router.handle_update(_callback_update(611, "vocab:known:70")))
+
+    call = fake_user_words.progress_calls[0]
+    _, status, ease, interval_days, _, mastery, consecutive_correct, is_correct = call[1:]
+    assert mastery == "review"  # 학습단계 졸업 -> 정규 SRS 사이클 진입
+    assert interval_days == 3  # round(2 * 1.7) -- 이제서야 ease 기반 성장 적용(예전 방식과 동일)
+    assert consecutive_correct == 2
+    assert is_correct is True
+
+
+def test_vocab_known_callback_with_no_active_session_notifies_user(monkeypatch):
+    """세션 만료/중복클릭 시 예전엔 아무 응답 없이 조용히 무시됐다(버튼 눌러도 무반응 버그) — 이제는 안내한다."""
+    fake_users, fake_user_words, sent = _wire(monkeypatch)
+    telegram_id = "609"
+    _setup_general_user(fake_users, telegram_id)
+
+    run(router.handle_update(_callback_update(609, "vocab:known:999")))
+
+    assert sent, "세션이 없을 때도 사용자에게 응답이 가야 한다"
+    assert "만료" in sent[-1][1] or "다시 시작" in sent[-1][1]
+
+
+def test_vocab_mcq_callback_with_stale_word_id_notifies_user(monkeypatch):
+    new_rows = [_word_row(63, "apple", "사과")]
+    fake_users, fake_user_words, sent = _wire(monkeypatch, new_rows=new_rows)
+    telegram_id = "610"
+    _setup_general_user(fake_users, telegram_id)
+
+    run(router.handle_update({"message": {"chat": {"id": 610}, "text": "/단어학습"}}))
+    run(router.handle_update(_callback_update(610, "vocab:unknown:63")))
+
+    sent.clear()
+    # 이미 지나간(다른) word_id로 지연 도착한 콜백 — 예전엔 조용히 무시됐다.
+    run(router.handle_update(_callback_update(610, "vocab:mcq:9999:0")))
+
+    assert sent, "세션이 있어도 word_id가 안 맞으면 사용자에게 응답이 가야 한다"
+    assert "만료" in sent[-1][1] or "다시 시작" in sent[-1][1]
 
 
 def test_vocab_session_unknown_word_mcq_then_subjective_correct(monkeypatch):
@@ -297,10 +373,17 @@ def test_vocab_session_unknown_word_mcq_then_subjective_correct(monkeypatch):
     assert "정답입니다" in sent[0][1]
     assert "완료" in sent[-1][1]
 
-    user_id, word_id, status, ease, interval_days, _ = fake_user_words.progress_calls[-1]
+    user_id, word_id, status, ease, interval_days, _, mastery, consecutive_correct, is_correct = (
+        fake_user_words.progress_calls[-1]
+    )
     assert (word_id, status) == (10, "learning")
     assert ease == 1.7  # 정답이므로 ease 유지
-    assert interval_days == 2  # round(1 * 1.7)
+    # V2 학습 엔진: 신규 단어의 첫 정답은 "암기 완료"로 곧장 처리하지 않는다 — 학습단계(재확인
+    # 대기)로만 넘어가고, 정규 SRS 간격(ease배 성장)은 아직 시작되지 않는다.
+    assert mastery == "learning_step_2"
+    assert consecutive_correct == 1
+    assert is_correct is True
+    assert interval_days == 1  # 학습단계 고정 간격(내일 재확인) — round(1*1.7)로 곧장 안 감
 
 
 def test_vocab_session_subjective_incorrect_resets_interval_and_lowers_ease(monkeypatch):
@@ -317,9 +400,14 @@ def test_vocab_session_subjective_incorrect_resets_interval_and_lowers_ease(monk
 
     run(router.handle_update({"message": {"chat": {"id": 603}, "text": "완전히 틀린 답"}}))
 
-    user_id, word_id, status, ease, interval_days, _ = fake_user_words.progress_calls[-1]
+    user_id, word_id, status, ease, interval_days, _, mastery, consecutive_correct, is_correct = (
+        fake_user_words.progress_calls[-1]
+    )
     assert (word_id, status) == (20, "learning")
     assert ease == 1.5  # 1.7 - 0.2
+    assert mastery == "learning_step_1"  # 오답이면 학습단계 처음으로 되돌아간다
+    assert consecutive_correct == 0
+    assert is_correct is False
 
 
 def test_subjective_wrong_answer_reshows_mnemonic(monkeypatch):
@@ -391,3 +479,55 @@ def test_vocab_quiz_flow(monkeypatch):
 
     assert "단어 시험 완료" in sent[-1][1]
     assert "2개 정답" in sent[-1][1]
+
+
+def test_two_users_vocab_sessions_and_progress_do_not_cross_contaminate(monkeypatch):
+    """사용자별 데이터 격리: 서로 다른 사용자(A/B)가 동시에 단어학습을 진행해도 세션/SRS 기록이
+    섞이면 안 된다 — A가 정답을 눌러도 B의 진행 중인 카드나 기록에는 아무 영향이 없어야 한다."""
+    new_rows_a = [_word_row(50, "apple", "사과")]
+    new_rows_b = [_word_row(60, "banana", "바나나")]
+    fake_users = FakeUsersRepo()
+    fake_user_words = FakeUserWordsRepo()
+    fake_learning_sessions = FakeLearningSessionsRepo()
+    monkeypatch.setattr(router, "users_repo", fake_users)
+    monkeypatch.setattr(router, "user_words_repo", fake_user_words)
+    monkeypatch.setattr(router, "learning_sessions_repo", fake_learning_sessions)
+    monkeypatch.setattr(router, "content_generator", FakeContentGenerator())
+    monkeypatch.setattr(router, "grammar_repo", NullGrammarRepo())
+    monkeypatch.setattr(router, "db_available", lambda: True)
+
+    sent: list[tuple] = []
+
+    async def fake_send(chat_id, text, reply_markup=None, parse_mode=None):
+        sent.append((chat_id, text))
+
+    async def fake_answer_cb(callback_query_id, text=None):
+        pass
+
+    monkeypatch.setattr(router, "send_message", fake_send)
+    monkeypatch.setattr(router, "answer_callback_query", fake_answer_cb)
+
+    telegram_a, telegram_b = "701", "702"
+    _setup_general_user(fake_users, telegram_a)
+    _setup_general_user(fake_users, telegram_b)
+    user_id_a = fake_users.users[telegram_a]["id"]
+    user_id_b = fake_users.users[telegram_b]["id"]
+
+    # A가 먼저 세션을 시작하고 (아직 답하지 않은 채로) B가 끼어들어 자기 세션을 시작한다.
+    monkeypatch.setattr(router, "content_repo", FakeContentRepo(topic_word_rows=new_rows_a))
+    run(router.handle_update({"message": {"chat": {"id": 701}, "text": "/단어학습"}}))
+    monkeypatch.setattr(router, "content_repo", FakeContentRepo(topic_word_rows=new_rows_b))
+    run(router.handle_update({"message": {"chat": {"id": 702}, "text": "/단어학습"}}))
+
+    item_a = vocab_service.current_item(telegram_a)
+    item_b = vocab_service.current_item(telegram_b)
+    assert item_a.word_id == 50
+    assert item_b.word_id == 60
+
+    # B가 정답을 누른다 — A의 세션/진행 기록에는 전혀 영향이 없어야 한다.
+    run(router.handle_update(_callback_update(702, "vocab:known:60")))
+
+    assert vocab_service.current_item(telegram_a).word_id == 50  # A는 그대로
+    assert fake_user_words.progress_calls == [(user_id_b, 60, "known", 1.7, 1, fake_user_words.progress_calls[0][5],
+                                                "learning_step_2", 1, True)]
+    assert all(call[0] != user_id_a for call in fake_user_words.progress_calls)

@@ -88,6 +88,55 @@ def test_generate_grammar_questions_keeps_valid_key_vocabulary_and_drops_malform
     assert result[0]["key_vocabulary"] == [good_vocab]
 
 
+def _part_question(prompt_sentence: str) -> dict:
+    return {
+        "topic": "현재완료",
+        "concept_intro": "현재완료는 과거에 시작된 일이 현재까지 이어질 때 쓴다.",
+        "prompt": prompt_sentence,
+        "choices": ["live", "lived", "has lived", "living"],
+        "correct_index": 2,
+        "explanation": "현재완료 계속 용법",
+    }
+
+
+def test_generate_grammar_questions_for_part_keeps_short_sentence(monkeypatch):
+    short = _part_question("She ___ lived here for ten years.")
+
+    async def fake_generate_json(prompt, model="gemini-3.1-flash-lite"):
+        return json.dumps([short])
+
+    monkeypatch.setattr(generator, "generate_json", fake_generate_json)
+
+    result = run(
+        generator.generate_grammar_questions_for_part(
+            "B1", "intermediate", "현재완료", "계속 용법", "설명", 1
+        )
+    )
+    assert len(result) == 1
+    assert result[0]["prompt"] == short["prompt"]
+
+
+def test_generate_grammar_questions_for_part_drops_overly_long_sentence(monkeypatch):
+    long_sentence = _part_question(
+        "She ___ lived in this exact same small town near the river for more than "
+        "ten very long years now, ever since she was a little child."
+    )
+    short_sentence = _part_question("She ___ lived here for ten years.")
+
+    async def fake_generate_json(prompt, model="gemini-3.1-flash-lite"):
+        return json.dumps([long_sentence, short_sentence])
+
+    monkeypatch.setattr(generator, "generate_json", fake_generate_json)
+
+    result = run(
+        generator.generate_grammar_questions_for_part(
+            "A1", "beginner", "현재완료", "계속 용법", "설명", 2
+        )
+    )
+    assert len(result) == 1
+    assert result[0]["prompt"] == short_sentence["prompt"]
+
+
 def test_generate_topic_words_parses_and_filters_malformed(monkeypatch):
     valid = {
         "word": "suitcase",
@@ -113,6 +162,62 @@ def test_generate_topic_words_parses_and_filters_malformed(monkeypatch):
     result = run(generator.generate_topic_words("beginner", "여행", 2))
     expected = {**valid, "example_sentence": "I packed my suitcase.", "example_translation": "나는 여행 가방을 쌌다."}
     assert result == [expected]
+
+
+def _reading_item(passage: str) -> dict:
+    return {
+        "passage": passage,
+        "model_translation_ko": "번역",
+        "avg_sentence_length": 8,
+        "vocab_level": "basic",
+        "grammar_complexity": "단순 현재시제",
+        "difficulty_band": 1,
+    }
+
+
+def test_reading_passage_within_word_pool_is_accepted_on_first_try(monkeypatch):
+    easy_passage = "I like my dog. My dog is happy. We play every day."
+    calls = []
+
+    async def fake_generate_json(prompt, model="gemini-3.1-flash-lite"):
+        calls.append(prompt)
+        return json.dumps([_reading_item(easy_passage)])
+
+    monkeypatch.setattr(generator, "generate_json", fake_generate_json)
+
+    result = run(
+        generator.generate_reading_passage_for_words(
+            "beginner", "일상생활", ["dog", "happy", "play"], []
+        )
+    )
+
+    assert len(calls) == 1  # 단어 목록 안에서 잘 만들었으면 재생성 안 함
+    assert result[0]["passage"] == easy_passage
+
+
+def test_reading_passage_full_of_unknown_words_triggers_one_regeneration(monkeypatch):
+    hard_passage = (
+        "Ubiquitous algorithmic accountability mechanisms necessitate pragmatic "
+        "epistemological considerations regarding institutional legitimacy."
+    )
+    easier_passage = "I like my dog. My dog is happy. We play every day."
+    responses = [json.dumps([_reading_item(hard_passage)]), json.dumps([_reading_item(easier_passage)])]
+    calls = []
+
+    async def fake_generate_json(prompt, model="gemini-3.1-flash-lite"):
+        calls.append(prompt)
+        return responses[len(calls) - 1]
+
+    monkeypatch.setattr(generator, "generate_json", fake_generate_json)
+
+    result = run(
+        generator.generate_reading_passage_for_words(
+            "beginner", "일상생활", ["dog", "happy", "play"], []
+        )
+    )
+
+    assert len(calls) == 2  # 미지단어 비율이 너무 높아 한 번 재생성했어야 한다
+    assert result[0]["passage"] == easier_passage  # 더 쉬운 재시도 결과를 채택
 
 
 def test_generate_words_raises_on_non_array_response(monkeypatch):

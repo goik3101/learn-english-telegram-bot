@@ -11,6 +11,21 @@ MIN_PART_ATTEMPTS = 5
 MASTERY_THRESHOLD = 0.8
 WEAK_THRESHOLD = 0.5
 
+# V2 학습 엔진: 오답이 이만큼 연속되면(포맷은 그대로 4지선다지만) 다음 문제 전에 개념 재설명 +
+# 방금 문제를 정답으로 채운 쉬운 예문을 한 번 더 보여준다(Phase A — 포맷 자체를 빈칸/서술형으로
+# 바꾸는 것은 더 큰 작업이라 다음 단계로 남겨둠).
+REEXPLAIN_AFTER_CONSECUTIVE_WRONG = 2
+
+
+def count_consecutive_wrong(recent_results_newest_first: list[bool]) -> int:
+    """최신순 정오답 리스트에서 맨 앞(가장 최근)부터 몇 개나 연속으로 틀렸는지 센다."""
+    count = 0
+    for is_correct in recent_results_newest_first:
+        if is_correct:
+            break
+        count += 1
+    return count
+
 
 def evaluate(recent_results_newest_first: list[bool]) -> str:
     """최신순으로 정렬된 최근 정오답 리스트를 보고 'mastered' | 'weak' | 'in_progress' 중 하나를 반환.

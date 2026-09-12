@@ -18,6 +18,8 @@ class WordItem:
     example_sentences: list[dict] | None = None  # [{"sentence":..,"translation":..}, ...] — 복습회차마다 다른 예문
     review_count: int = 0
     emoji: str | None = None
+    mastery: str = "new"  # app.vocab.mastery 참고 — 학습단계(learning steps) 상태머신의 현재 위치
+    consecutive_correct: int = 0
 
 
 def pick_example(item: WordItem) -> tuple[str | None, str | None]:

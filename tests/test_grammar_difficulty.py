@@ -294,6 +294,34 @@ def test_part_advances_after_five_correct_answers_in_a_single_session(monkeypatc
     assert fake_grammar.user_progress[user_id]["current_part_id"] == 2  # 다음 파트로 자동 진행
 
 
+def test_two_consecutive_wrong_answers_trigger_reexplanation_before_next_question(monkeypatch):
+    """V2 학습 엔진(문법 Phase A): 같은 파트에서 오답이 2번 연속되면 다음 문제를 보내기 전에
+    개념 재설명 + 방금 문제를 정답으로 채운 쉬운 예문을 한 번 더 보여줘야 한다."""
+    parts = [_part(1, 10, "현재완료", "계속 용법", 0)]
+    questions = [
+        _part_question(
+            300 + i, 1, "현재완료", f"She ___ lived here for {i} years.",
+            ["live", "lived", "has lived", "living"], 2, concept_intro="현재완료는 과거부터 지금까지 이어질 때 쓴다.",
+        )
+        for i in range(5)
+    ]
+    fake_users, fake_grammar, sent = _wire(monkeypatch, parts=parts, questions=questions)
+    telegram_id = "9112"
+    _setup_general_user(fake_users, telegram_id)
+
+    run(router.handle_update({"message": {"chat": {"id": 9112}, "text": "/문법학습"}}))
+    sent.clear()
+    run(router.handle_update(_callback_update(9112, "grammar:300:0")))  # 1번째 오답(정답은 2)
+    assert not any("다시 한 번" in entry[1] for entry in sent)  # 아직 1번 연속이라 재설명 안 함
+
+    sent.clear()
+    run(router.handle_update(_callback_update(9112, "grammar:301:0")))  # 2번째 연속 오답
+    reexplanation = [entry[1] for entry in sent if "다시 한 번" in entry[1]]
+    assert len(reexplanation) == 1
+    assert "현재완료는 과거부터 지금까지 이어질 때 쓴다." in reexplanation[0]
+    assert "She ___ lived here for 1 years.".replace("___", "has lived") in reexplanation[0]
+
+
 def test_part_does_not_advance_with_low_accuracy_and_reprioritizes_weak_error_type(monkeypatch):
     parts = [_part(1, 10, "현재시제", "3인칭단수 -s", 0)]
     questions = [

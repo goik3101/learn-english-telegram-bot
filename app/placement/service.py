@@ -27,6 +27,11 @@ def has_active_session(telegram_id: str) -> bool:
     return telegram_id in _sessions
 
 
+def abandon_session(telegram_id: str) -> None:
+    """/학습중단으로 레벨진단을 중간에 끊을 때 호출 — 이미 답한 문항은 세션에만 있어 그대로 버려진다."""
+    _sessions.pop(telegram_id, None)
+
+
 def get_question(question_id: str) -> Question | None:
     return QUESTIONS_BY_ID.get(question_id)
 

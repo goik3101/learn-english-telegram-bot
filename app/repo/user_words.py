@@ -15,6 +15,7 @@ async def get_due_review_words(user_id: int, today: date, limit: int | None = No
             await cur.execute(
                 """
                 select uw.word_id, uw.ease, uw.interval_days, uw.review_count,
+                       uw.mastery, uw.consecutive_correct,
                        w.word, w.meaning_ko, w.pronunciation, w.example_sentence, w.example_translation, w.level,
                        w.mnemonic, w.example_sentences, w.emoji
                 from user_words uw
@@ -106,6 +107,29 @@ async def get_known_topic_words(user_id: int, topic: str, level: str, learning_m
             return await cur.fetchall()
 
 
+async def get_mastered_word_stats(user_id: int) -> tuple[float | None, int]:
+    """V2 학습 엔진(app/vocab/level.py): 이 사용자가 실제로 mastered 상태까지 확인한 단어들의
+    frequency_rank 중앙값과 표본 크기를 반환한다 — 어휘 레벨을 문법 진행도가 아니라 실제 학습
+    기록에서 독립적으로 추정하기 위함(frequency_rank는 어디까지나 보조자료)."""
+    pool = get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                select percentile_cont(0.5) within group (order by w.frequency_rank) as median_rank,
+                       count(*) as n
+                from user_words uw
+                join words w on w.id = uw.word_id
+                where uw.user_id = %s and uw.mastery = 'mastered' and w.frequency_rank is not null
+                """,
+                (user_id,),
+            )
+            row = await cur.fetchone()
+            return (float(row["median_rank"]) if row and row["median_rank"] is not None else None), (
+                row["n"] if row else 0
+            )
+
+
 async def record_word_attempt(user_id: int, word_id: int, band: int, is_correct: bool) -> None:
     """신규 단어(첫 학습)를 완료했을 때만 기록 — SRS 복습은 대상이 아니다."""
     pool = get_pool()
@@ -161,24 +185,53 @@ async def upsert_word_progress(
     ease: float,
     interval_days: int,
     next_review_date: date,
+    mastery: str,
+    consecutive_correct: int,
+    is_correct: bool,
 ) -> None:
+    """V2 학습 엔진(단어 암기): status/ease/interval_days는 기존 SRS 그대로 쓰고, mastery/
+    consecutive_correct(app.vocab.mastery.apply_answer가 계산한 최종값을 그대로 받음)와
+    correct_count/wrong_count/first_exposed_at/last_wrong_at(누적 통계, 여기서 증분)을 함께 기록한다."""
     pool = get_pool()
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
                 insert into user_words
-                    (user_id, word_id, status, ease, interval_days, next_review_date, last_reviewed_at, review_count)
-                values (%s, %s, %s, %s, %s, %s, now(), 1)
+                    (user_id, word_id, status, ease, interval_days, next_review_date, last_reviewed_at,
+                     review_count, mastery, consecutive_correct, correct_count, wrong_count,
+                     first_exposed_at, last_wrong_at)
+                values (%(user_id)s, %(word_id)s, %(status)s, %(ease)s, %(interval_days)s, %(next_review_date)s, now(),
+                        1, %(mastery)s, %(consecutive_correct)s,
+                        case when %(is_correct)s then 1 else 0 end,
+                        case when %(is_correct)s then 0 else 1 end,
+                        now(),
+                        case when %(is_correct)s then null else now() end)
                 on conflict (user_id, word_id) do update set
                     status = excluded.status,
                     ease = excluded.ease,
                     interval_days = excluded.interval_days,
                     next_review_date = excluded.next_review_date,
                     last_reviewed_at = now(),
-                    review_count = user_words.review_count + 1
+                    review_count = user_words.review_count + 1,
+                    mastery = excluded.mastery,
+                    consecutive_correct = excluded.consecutive_correct,
+                    correct_count = user_words.correct_count + (case when %(is_correct)s then 1 else 0 end),
+                    wrong_count = user_words.wrong_count + (case when %(is_correct)s then 0 else 1 end),
+                    first_exposed_at = coalesce(user_words.first_exposed_at, now()),
+                    last_wrong_at = case when %(is_correct)s then user_words.last_wrong_at else now() end
                 """,
-                (user_id, word_id, status, ease, interval_days, next_review_date),
+                {
+                    "user_id": user_id,
+                    "word_id": word_id,
+                    "status": status,
+                    "ease": ease,
+                    "interval_days": interval_days,
+                    "next_review_date": next_review_date,
+                    "mastery": mastery,
+                    "consecutive_correct": consecutive_correct,
+                    "is_correct": is_correct,
+                },
             )
 
 

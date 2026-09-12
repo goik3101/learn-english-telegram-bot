@@ -47,6 +47,8 @@ from app.telegram_client import (
     spoiler_html,
 )
 from app.vocab import frequency as word_frequency
+from app.vocab import level as vocab_level
+from app.vocab import mastery as vocab_mastery
 from app.vocab import service as vocab_service
 from app.vocab.quiz import build_choices, is_meaning_match
 
@@ -62,6 +64,31 @@ async def handle_update(update: dict) -> None:
         logger.warning("DB unavailable — dropping update")
         return
 
+    try:
+        await _dispatch_update(update)
+    except Exception:
+        # 개별 핸들러가 감싸지 않은 예외(예상 못한 DB/로직 오류)가 여기까지 올라오면 이 요청은
+        # 그냥 조용히 실패하고 사용자는 봇이 먹통이 된 것처럼 느낀다 — 최소한 안내 메시지는 보낸다.
+        logger.exception("unhandled error while processing update")
+        chat_id = _extract_chat_id_for_error(update)
+        if chat_id is not None:
+            try:
+                await send_message(chat_id, "일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.")
+            except Exception:
+                logger.exception("failed to notify user about unhandled error")
+
+
+def _extract_chat_id_for_error(update: dict) -> int | None:
+    callback_query = update.get("callback_query")
+    if callback_query:
+        return ((callback_query.get("message") or {}).get("chat") or {}).get("id")
+    message = update.get("message")
+    if message:
+        return (message.get("chat") or {}).get("id")
+    return None
+
+
+async def _dispatch_update(update: dict) -> None:
     if "callback_query" in update:
         await _handle_callback_query(update["callback_query"])
         return
@@ -296,6 +323,12 @@ async def _handle_stop_learning(telegram_id: str, chat_id: int, user) -> None:
     if exam_registration_service.is_active(telegram_id):
         exam_registration_service.finish(telegram_id)
         stopped_anything = True
+    if exam_review_service.is_active(telegram_id):
+        exam_review_service.finish(telegram_id)
+        stopped_anything = True
+    if placement_service.has_active_session(telegram_id):
+        placement_service.abandon_session(telegram_id)
+        stopped_anything = True
     if today_session.is_active(telegram_id):
         today_session.stop(telegram_id)
         stopped_anything = True
@@ -390,6 +423,11 @@ async def _handle_callback_query(callback_query: dict) -> None:
     if parts[0] == "childquiz" and len(parts) == 3:
         await _handle_child_quiz_answer(telegram_id, chat_id, int(parts[1]), int(parts[2]))
         return
+
+    # 여기까지 왔다는 건 어떤 분기에도 안 걸린 callback_data라는 뜻(예: 이미 삭제된 기능의
+    # 오래된 인라인 버튼) — 사용자 화면은 버튼이 사라지는 것으로 이미 끝났으니 추가 메시지는
+    # 안 보내되, 원인 추적을 위해 로그는 남긴다.
+    logger.warning("unhandled callback_data: %s", data)
 
 
 async def _ensure_admin_registered(telegram_id: str) -> None:
@@ -559,6 +597,8 @@ async def _build_vocab_queue(user) -> tuple[str, list[vocab_service.WordItem]]:
             example_sentences=row.get("example_sentences"),
             review_count=row.get("review_count") or 0,
             emoji=row.get("emoji"),
+            mastery=row.get("mastery") or vocab_mastery.MASTERY_NEW,
+            consecutive_correct=row.get("consecutive_correct") or 0,
         )
         for row in due_rows
     ]
@@ -730,13 +770,29 @@ async def _record_word_band_attempt(telegram_id: str, user, word_id: int, is_cor
         await users_repo.set_word_band(telegram_id, new_band)
 
 
+def _apply_vocab_answer(item: vocab_service.WordItem, is_correct: bool) -> tuple[srs.SrsResult, str, int]:
+    """V2 학습 엔진(단어 암기): "한 번 맞춤 = 암기 완료"로 처리하지 않기 위해, app.vocab.mastery의
+    학습단계 상태머신을 먼저 거친다 — 학습단계 중이면(is_learning_step) ease 기반 정규 SRS 간격
+    성장 대신 짧은 고정 간격(내일)만 예약하고, 학습단계를 통과한 뒤에야 기존 srs.apply_correct/
+    apply_incorrect로 정규 간격이 자란다."""
+    transition = vocab_mastery.apply_answer(item.mastery, item.consecutive_correct, is_correct)
+    if not is_correct:
+        result = srs.apply_incorrect(item.interval_days, item.ease)
+    elif transition.is_learning_step:
+        result = srs.SrsResult(interval_days=vocab_mastery.LEARNING_STEP_INTERVAL_DAYS, ease=item.ease)
+    else:
+        result = srs.apply_correct(item.interval_days, item.ease)
+    return result, transition.mastery, transition.consecutive_correct
+
+
 async def _handle_vocab_known(telegram_id: str, chat_id: int, word_id: int) -> None:
     item = vocab_service.current_item(telegram_id)
     if item is None or item.word_id != word_id:
+        await _send_vocab_session_expired(telegram_id, chat_id)
         return
 
     user = await users_repo.get_user_by_telegram_id(telegram_id)
-    result = srs.apply_correct(item.interval_days, item.ease)
+    result, new_mastery, new_streak = _apply_vocab_answer(item, is_correct=True)
     await user_words_repo.upsert_word_progress(
         user["id"],
         word_id,
@@ -744,6 +800,9 @@ async def _handle_vocab_known(telegram_id: str, chat_id: int, word_id: int) -> N
         result.ease,
         result.interval_days,
         date.today() + timedelta(days=result.interval_days),
+        new_mastery,
+        new_streak,
+        True,
     )
     vocab_service.record_result(telegram_id, True)
     if item.is_new:
@@ -751,12 +810,21 @@ async def _handle_vocab_known(telegram_id: str, chat_id: int, word_id: int) -> N
     await _finish_vocab_word(telegram_id, chat_id, user)
 
 
+async def _send_vocab_session_expired(telegram_id: str, chat_id: int) -> None:
+    await send_message(
+        chat_id,
+        "이미 처리된 카드이거나 세션이 만료되었습니다. /단어학습으로 다시 시작해 주세요.",
+        reply_markup=menu.build_main_menu_keyboard(telegram_id == settings.admin_telegram_id),
+    )
+
+
 async def _handle_vocab_unknown(telegram_id: str, chat_id: int, word_id: int) -> None:
     item = vocab_service.current_item(telegram_id)
     if item is None or item.word_id != word_id:
+        await _send_vocab_session_expired(telegram_id, chat_id)
         return
     if vocab_service.current_stage(telegram_id) != "card":
-        return  # 이미 처리된 카드에 대한 중복/지연된 클릭 무시
+        return  # 이미 처리된 카드에 대한 중복/지연된 클릭 무시(사용자가 두 번 빠르게 누른 경우) — 안내 불필요
 
     distractors = await user_words_repo.get_distractor_meanings(item.level, word_id, 3, learning_mode=item.learning_mode)
     choices, correct_index = build_choices(item.meaning_ko, distractors)
@@ -771,8 +839,11 @@ async def _handle_vocab_unknown(telegram_id: str, chat_id: int, word_id: int) ->
 
 async def _handle_vocab_mcq_answer(telegram_id: str, chat_id: int, word_id: int, choice_index: int) -> None:
     item = vocab_service.current_item(telegram_id)
-    if item is None or item.word_id != word_id or vocab_service.current_stage(telegram_id) != "mcq":
+    if item is None or item.word_id != word_id:
+        await _send_vocab_session_expired(telegram_id, chat_id)
         return
+    if vocab_service.current_stage(telegram_id) != "mcq":
+        return  # 이미 처리된 문항에 대한 중복/지연된 클릭 무시 — 안내 불필요
 
     choices, correct_index = vocab_service.get_mcq(telegram_id)
     is_correct = choice_index == correct_index
@@ -796,14 +867,11 @@ async def _handle_vocab_mcq_answer(telegram_id: str, chat_id: int, word_id: int,
 async def _handle_vocab_subjective_answer(telegram_id: str, chat_id: int, user, text: str) -> None:
     item = vocab_service.current_item(telegram_id)
     if item is None:
+        await _send_vocab_session_expired(telegram_id, chat_id)
         return
 
     is_correct = is_meaning_match(text, item.meaning_ko)
-    result = (
-        srs.apply_correct(item.interval_days, item.ease)
-        if is_correct
-        else srs.apply_incorrect(item.interval_days, item.ease)
-    )
+    result, new_mastery, new_streak = _apply_vocab_answer(item, is_correct)
     await user_words_repo.upsert_word_progress(
         user["id"],
         item.word_id,
@@ -811,6 +879,9 @@ async def _handle_vocab_subjective_answer(telegram_id: str, chat_id: int, user, 
         result.ease,
         result.interval_days,
         date.today() + timedelta(days=result.interval_days),
+        new_mastery,
+        new_streak,
+        is_correct,
     )
     vocab_service.record_result(telegram_id, is_correct)
     if item.is_new:
@@ -1032,19 +1103,31 @@ async def _get_or_init_current_grammar_part(user_id: int) -> dict | None:
 
 
 async def _get_effective_content_level(user) -> str:
-    """단어/해석(오늘의 주제 통합 학습)에 쓸 난이도.
+    """해석(독해 지문의 문장/문법 난이도)에 쓸 난이도 — 문법 진행도 기반.
 
     버그리포트: 예전부터 `user["placement_level"]`(최초 1회 레벨진단 결과, beginner/intermediate/
     advanced)을 그대로 썼는데, 문법은 배치레벨과 무관하게 항상 CEFR 커리큘럼 맨 처음(be동사)부터
     시작한다(사용자 요청). 그 결과 배치레벨이 "advanced"로 나온 사용자가 문법은 be동사(A1)를
-    배우는 중인데 해석 지문/오늘의 단어는 "유학 준비생 학술 수준" 어휘로 생성되는 불일치가
-    실사용에서 확인됨. 이제 그날 실제로 진행 중인 CEFR 문법 단계에서 난이도를 유도하고,
-    커리큘럼이 아직 시작되지 않았을 때만 배치레벨로 폴백한다.
+    배우는 중인데 해석 지문이 "유학 준비생 학술 수준" 어휘/문장으로 생성되는 불일치가 실사용에서
+    확인됨. 이제 그날 실제로 진행 중인 CEFR 문법 단계에서 난이도를 유도하고, 커리큘럼이 아직
+    시작되지 않았을 때만 배치레벨로 폴백한다.
+
+    V2 학습 엔진(영역별 독립 축): 단어(신규 어휘 선정) 난이도는 이 함수가 아니라
+    `_get_effective_vocab_level`이 별도로 담당한다 — "문법 진행도"와 "실제 어휘 암기 기록"은
+    서로 다른 축이라 사용자가 문법은 느리고 어휘는 빠르거나(또는 반대) 할 수 있기 때문이다.
     """
     current_part = await _get_or_init_current_grammar_part(user["id"])
     if current_part is not None:
         return grammar_curriculum_data.CEFR_TO_LEGACY_LEVEL[current_part["cefr_level"]]
     return user["placement_level"] or "beginner"
+
+
+async def _get_effective_vocab_level(user) -> str:
+    """V2 학습 엔진: 신규 단어(오늘의 주제 단어 풀) 생성에 쓸 난이도 — 문법 진행도가 아니라
+    이 사용자가 실제로 mastered까지 확인한 단어들의 frequency_rank 분포에서 독립적으로 유도한다
+    (app/vocab/level.py). mastered 단어가 아직 부족한 사용자는 "beginner"로 시작한다."""
+    median_rank, mastered_count = await user_words_repo.get_mastered_word_stats(user["id"])
+    return vocab_level.level_from_mastered_words(median_rank, mastered_count)
 
 
 def _grammar_topic_label(question: grammar_service.GrammarQuestion) -> str:
@@ -1071,6 +1154,34 @@ async def _send_grammar_question(chat_id: int, question: grammar_service.Grammar
     )
     prefix = f"{label} " if label else ""
     await send_message(chat_id, f"{prefix}{question.prompt}", reply_markup=keyboard)
+
+
+def _worked_example_sentence(question: grammar_service.GrammarQuestion) -> str:
+    """방금 문제의 빈칸을 정답으로 채운 완성 문장 — 새 AI 호출/DB 조회 없이 재설명용 예문으로 쓴다."""
+    correct_choice = question.choices[question.correct_index]
+    return question.prompt.replace("___", correct_choice)
+
+
+async def _maybe_send_grammar_reexplanation(
+    chat_id: int, user_id: int, question: grammar_service.GrammarQuestion, part_id: int | None, is_review: bool
+) -> None:
+    """V2 학습 엔진(문법, Phase A): 같은 파트에서 오답이 연속되면(포맷은 그대로 4지선다) 다음
+    문제로 넘어가기 전에 개념을 다시 설명하고, 방금 문제를 정답으로 채운 쉬운 예문을 보여준다 —
+    단순히 비슷한 문제를 반복하는 것과 달리 "재설명 → 쉬운 예문" 단계를 한 번 끼워 넣는다."""
+    if part_id is None:
+        return
+    recent = await grammar_repo.get_part_recent_results(
+        user_id, part_id, grammar_mastery.REEXPLAIN_AFTER_CONSECUTIVE_WRONG, is_review
+    )
+    if grammar_mastery.count_consecutive_wrong(recent) < grammar_mastery.REEXPLAIN_AFTER_CONSECUTIVE_WRONG:
+        return
+
+    worked_example = _worked_example_sentence(question)
+    lines = ["🔁 잠깐, 다시 한 번 짚고 갈게요."]
+    if question.concept_intro:
+        lines.append(question.concept_intro)
+    lines.append(f"이렇게 쓰면 됩니다: {worked_example}")
+    await send_message(chat_id, "\n".join(lines))
 
 
 async def _maybe_advance_grammar_part(telegram_id: str, user, part_id: int | None) -> None:
@@ -1162,6 +1273,8 @@ async def _handle_grammar_answer(telegram_id: str, chat_id: int, question_id: in
 
     if not result.finished:
         await send_message(chat_id, feedback)
+        if not result.is_correct:
+            await _maybe_send_grammar_reexplanation(chat_id, user["id"], result.question, part_id, result.is_review)
         await _send_grammar_question(chat_id, result.next_question)
         return
 
@@ -1410,10 +1523,14 @@ async def _get_or_generate_topic_words(level: str, topic: str, learning_mode: st
 
 async def _get_or_create_today_topic(user) -> tuple[str, list[dict]]:
     """오늘의 주제 통합 학습: 단어학습/해석/회화가 공유하는 "오늘의 주제 + 핵심 단어 풀"을 하루
-    1회만 정하고(learning_sessions에 캐싱), 이후 같은 날 재호출되면 그대로 재사용한다."""
+    1회만 정하고(learning_sessions에 캐싱), 이후 같은 날 재호출되면 그대로 재사용한다.
+
+    V2 학습 엔진: 이 풀에 담길 신규 단어 자체의 난이도는 `_get_effective_vocab_level`(실제 어휘
+    암기 기록 기반, 문법 진행도와 독립)로 정한다 — 해석 지문의 문장/문법 난이도는 별도로
+    `_get_effective_content_level`(문법 진행도 기반)이 담당하며 이 값과 무관하다."""
     await learning_sessions_repo.start_today(user["id"])
     row = await learning_sessions_repo.get_today_row(user["id"])
-    level = await _get_effective_content_level(user)
+    level = await _get_effective_vocab_level(user)
     mode = user["learning_mode"]
 
     if row and row.get("today_topic"):
@@ -1678,9 +1795,9 @@ async def _send_school_assignment_question(chat_id: int, question: school_assign
 async def _handle_school_assignment_exam_answer(
     telegram_id: str, chat_id: int, question_index: int, choice_index: int
 ) -> None:
+    # current_question()과 submit_exam_answer()는 같은 세션 상태를 보므로, 세션이 없거나 만료된
+    # 경우 question도 result도 함께 None이 된다 — 아래 result 체크가 이 경우를 안내 메시지와 함께 처리한다.
     question = school_assignment_service.current_question(telegram_id)
-    if question is None:
-        return
 
     result = school_assignment_service.submit_exam_answer(telegram_id, question_index, choice_index)
     if result is None:
@@ -1877,9 +1994,9 @@ async def _send_exam_review_question(chat_id: int, question: school_assignment_s
 
 
 async def _handle_exam_review_answer(telegram_id: str, chat_id: int, question_index: int, choice_index: int) -> None:
+    # current_question()과 submit_answer()는 같은 세션 상태를 보므로, 세션이 없거나 만료된 경우
+    # question도 result도 함께 None이 된다 — 아래 result 체크가 이 경우를 안내 메시지와 함께 처리한다.
     question = exam_review_service.current_question(telegram_id)
-    if question is None:
-        return
 
     result = exam_review_service.submit_answer(telegram_id, question_index, choice_index)
     if result is None:
@@ -2002,6 +2119,9 @@ async def _send_child_card(chat_id: int, card) -> None:
 async def _handle_child_card_next(telegram_id: str, chat_id: int) -> None:
     session = child_service.get_session(telegram_id)
     if session is None or session.phase != "cards":
+        await send_message(
+            chat_id, "이미 끝난 카드예요! 메뉴에서 다시 시작해볼까요?", reply_markup=child_menu.build_child_menu_keyboard()
+        )
         return
 
     next_card = child_service.advance_card(telegram_id)
@@ -2037,9 +2157,9 @@ async def _send_child_quiz_item(chat_id: int, item: child_service.StageQuizItem,
 
 
 async def _handle_child_quiz_answer(telegram_id: str, chat_id: int, item_index: int, choice_index: int) -> None:
+    # current_quiz_item()과 submit_quiz_answer()는 같은 세션 상태를 보므로, 세션이 없거나 만료된
+    # 경우 item도 result도 함께 None이 된다 — 아래 result 체크가 이 경우를 안내 메시지와 함께 처리한다.
     item = child_service.current_quiz_item(telegram_id)
-    if item is None:
-        return
 
     session = child_service.get_session(telegram_id)
     is_listening_stage = session is not None and session.stage == 6
