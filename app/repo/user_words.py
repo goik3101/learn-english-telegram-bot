@@ -32,10 +32,10 @@ async def get_due_review_words(
                 where uw.user_id = %(user_id)s and uw.next_review_date <= %(today)s and uw.status != 'new'
                 order by
                     case
-                        when %(current_vocab_level)s is null then 0
+                        when %(current_vocab_level)s::text is null then 0
                         else greatest(
                             (case w.level when 'advanced' then 2 when 'intermediate' then 1 else 0 end) -
-                            (case %(current_vocab_level)s when 'advanced' then 2 when 'intermediate' then 1 else 0 end),
+                            (case %(current_vocab_level)s::text when 'advanced' then 2 when 'intermediate' then 1 else 0 end),
                             0
                         )
                     end,
