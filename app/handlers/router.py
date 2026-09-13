@@ -383,6 +383,14 @@ async def _handle_callback_query(callback_query: dict) -> None:
             await _handle_vocab_unknown(telegram_id, chat_id, word_id)
         return
 
+    if parts[0] == "vocab" and len(parts) == 3 and parts[1] in ("recallknown", "recallunknown"):
+        word_id = int(parts[2])
+        if parts[1] == "recallknown":
+            await _handle_vocab_recall_known(telegram_id, chat_id, word_id)
+        else:
+            await _handle_vocab_recall_unknown(telegram_id, chat_id, word_id)
+        return
+
     if parts[0] == "vocab" and len(parts) == 4 and parts[1] == "mcq":
         await _handle_vocab_mcq_answer(telegram_id, chat_id, int(parts[2]), int(parts[3]))
         return
@@ -562,7 +570,13 @@ async def _handle_placement_answer(telegram_id: str, chat_id: int, question_id: 
 
 async def _build_vocab_queue(user) -> tuple[str, list[vocab_service.WordItem]]:
     today = date.today()
-    due_rows = await user_words_repo.get_due_review_words(user["id"], today, limit=srs.DAILY_REVIEW_LIMIT)
+    # 실사용 사례("subsidiary" 등 legacy advanced 단어가 지금은 beginner인 사용자의 복습 큐를
+    # 매일 지배하던 문제): 복습 대상도 현재 어휘 레벨과 명백히 안 맞으면 뒤로 밀리도록
+    # current_vocab_level을 넘긴다(완전 배제 아님 — get_due_review_words 문서 참고).
+    current_vocab_level = await _get_effective_vocab_level(user)
+    due_rows = await user_words_repo.get_due_review_words(
+        user["id"], today, limit=srs.DAILY_REVIEW_LIMIT, current_vocab_level=current_vocab_level
+    )
     new_limit = user["daily_new_word_limit"] or srs.DEFAULT_DAILY_NEW_WORDS
     mode = user["learning_mode"]
 
@@ -624,12 +638,25 @@ async def _build_vocab_queue(user) -> tuple[str, list[vocab_service.WordItem]]:
     return topic, items
 
 
-def _word_card_text(item: vocab_service.WordItem) -> str:
+def _word_reveal_text(item: vocab_service.WordItem) -> str:
+    """뜻/예문/해석/연상법 블록 — 신규카드 전체공개와 복습 recall 공개가 공유한다."""
+    lines = [f"뜻: {item.meaning_ko}"]
+    example_sentence, example_translation = vocab_service.pick_example(item)
+    if example_sentence:
+        lines.append(f"예문: {example_sentence}")
+    if example_translation:
+        lines.append(f"해석: {example_translation}")
+    if item.mnemonic:
+        lines.append(f"💡 {item.mnemonic}")
+    return "\n".join(lines)
+
+
+def _new_word_card_text(item: vocab_service.WordItem) -> str:
     # 연구 근거 반영(사용자 피드백): 첫 노출 때 맨입으로 추측시키는 것은 학습 효과가 낮다는 연구에
     # 따라 뜻/발음/예문/연상법을 곧바로 전부 보여준다("추측 먼저" 단계는 넣지 않음). 복습 중 다시
-    # 만났을 때의 능동적 상기는 [모르는단어] → 객관식 → 주관식 흐름이 이미 담당한다(안 건드림).
+    # 만났을 때의 능동적 상기는 이제 _review_recall_prompt_text가 담당한다(신규/복습 UX 분리).
     emoji_prefix = f"{item.emoji} " if item.emoji else ""
-    lines = [f"{emoji_prefix}📘 {item.word}", f"뜻: {item.meaning_ko}"]
+    lines = ["🆕 신규", f"{emoji_prefix}📘 {item.word}", f"뜻: {item.meaning_ko}"]
     if item.pronunciation:
         lines.append(f"발음: {item.pronunciation}")
     example_sentence, example_translation = vocab_service.pick_example(item)
@@ -642,16 +669,44 @@ def _word_card_text(item: vocab_service.WordItem) -> str:
     return "\n".join(lines)
 
 
-async def _send_word_card(chat_id: int, item: vocab_service.WordItem) -> None:
+def _review_recall_prompt_text(item: vocab_service.WordItem) -> str:
+    """V2 학습 엔진(복습 recall): 뜻/예문/연상법을 가리고 단어+발음만 보여줘 실제 회상을
+    요구한다 — [기억남]을 뜻도 안 보고 누르는 예전 문제("아는단어" 즉시판정)를 재현하지 않기
+    위함(실사용 피드백 반영)."""
+    emoji_prefix = f"{item.emoji} " if item.emoji else ""
+    lines = ["🔁 복습", f"{emoji_prefix}📘 {item.word}"]
+    if item.pronunciation:
+        lines.append(f"발음: {item.pronunciation}")
+    lines.append("이 단어의 뜻, 기억나시나요?")
+    return "\n".join(lines)
+
+
+async def _send_word_card(telegram_id: str, chat_id: int, item: vocab_service.WordItem) -> None:
+    """신규 단어(첫 노출)와 복습(SRS due) 단어는 서로 다른 카드/버튼을 보여준다 — is_new이
+    구분 신호(둘 다 항상 같은 렌더러를 썼던 기존 방식 대신)."""
+    if item.is_new:
+        vocab_service.enter_card_stage(telegram_id)
+        keyboard = build_inline_keyboard(
+            [
+                ("아는단어", f"vocab:known:{item.word_id}"),
+                ("모르는단어", f"vocab:unknown:{item.word_id}"),
+                ("🔊 발음 듣기", f"ttsword:{item.word_id}"),
+            ],
+            columns=2,
+        )
+        await send_message(chat_id, _new_word_card_text(item), reply_markup=keyboard)
+        return
+
+    vocab_service.enter_recall_stage(telegram_id)
     keyboard = build_inline_keyboard(
         [
-            ("아는단어", f"vocab:known:{item.word_id}"),
-            ("모르는단어", f"vocab:unknown:{item.word_id}"),
+            ("기억남", f"vocab:recallknown:{item.word_id}"),
+            ("모르겠음", f"vocab:recallunknown:{item.word_id}"),
             ("🔊 발음 듣기", f"ttsword:{item.word_id}"),
         ],
         columns=2,
     )
-    await send_message(chat_id, _word_card_text(item), reply_markup=keyboard)
+    await send_message(chat_id, _review_recall_prompt_text(item), reply_markup=keyboard)
 
 
 async def _handle_word_pronunciation(telegram_id: str, chat_id: int, word_id: int) -> None:
@@ -694,7 +749,7 @@ async def _start_vocab_session(telegram_id: str, chat_id: int, user) -> bool:
         f"단어 학습을 시작합니다. 복습 {review_count}개 + 신규 {new_count}개 (총 {len(items)}개), "
         f"[아는단어]/[모르는단어]로 답해주세요.",
     )
-    await _send_word_card(chat_id, first)
+    await _send_word_card(telegram_id, chat_id, first)
     return True
 
 
@@ -709,7 +764,7 @@ def _new_words_summary_text(new_words: list[tuple[str, str]]) -> str:
 async def _finish_vocab_word(telegram_id: str, chat_id: int, user) -> None:
     next_item = vocab_service.advance(telegram_id)
     if next_item is not None:
-        await _send_word_card(chat_id, next_item)
+        await _send_word_card(telegram_id, chat_id, next_item)
         return
 
     summary = vocab_service.finish_session(telegram_id)
@@ -816,6 +871,63 @@ async def _send_vocab_session_expired(telegram_id: str, chat_id: int) -> None:
         "이미 처리된 카드이거나 세션이 만료되었습니다. /단어학습으로 다시 시작해 주세요.",
         reply_markup=menu.build_main_menu_keyboard(telegram_id == settings.admin_telegram_id),
     )
+
+
+async def _handle_vocab_recall_known(telegram_id: str, chat_id: int, word_id: int) -> None:
+    """V2 학습 엔진(복습 recall): 뜻을 안 본 채로 [기억남]을 눌렀다는 뜻이므로 정답 처리한다 —
+    _apply_vocab_answer가 기존 학습단계/SRS 로직을 그대로 이어받는다(신규 로직 아님)."""
+    item = vocab_service.current_item(telegram_id)
+    if item is None or item.word_id != word_id:
+        await _send_vocab_session_expired(telegram_id, chat_id)
+        return
+    if vocab_service.current_stage(telegram_id) != "recall":
+        return  # 이미 처리된 카드에 대한 중복/지연된 클릭 무시 — 안내 불필요
+
+    user = await users_repo.get_user_by_telegram_id(telegram_id)
+    result, new_mastery, new_streak = _apply_vocab_answer(item, is_correct=True)
+    await user_words_repo.upsert_word_progress(
+        user["id"],
+        word_id,
+        "known",
+        result.ease,
+        result.interval_days,
+        date.today() + timedelta(days=result.interval_days),
+        new_mastery,
+        new_streak,
+        True,
+    )
+    vocab_service.record_result(telegram_id, True)
+    await send_message(chat_id, f"잘 기억하고 있어요! ✅\n{_word_reveal_text(item)}")
+    await _finish_vocab_word(telegram_id, chat_id, user)
+
+
+async def _handle_vocab_recall_unknown(telegram_id: str, chat_id: int, word_id: int) -> None:
+    """V2 학습 엔진(복습 recall): [모르겠음]은 기존 주관식 오답과 동일하게 처리한다(오답 →
+    learning_step_1로 리셋 + ease 하락, app/vocab/mastery.py 참고)."""
+    item = vocab_service.current_item(telegram_id)
+    if item is None or item.word_id != word_id:
+        await _send_vocab_session_expired(telegram_id, chat_id)
+        return
+    if vocab_service.current_stage(telegram_id) != "recall":
+        return  # 이미 처리된 카드에 대한 중복/지연된 클릭 무시 — 안내 불필요
+
+    user = await users_repo.get_user_by_telegram_id(telegram_id)
+    result, new_mastery, new_streak = _apply_vocab_answer(item, is_correct=False)
+    await user_words_repo.upsert_word_progress(
+        user["id"],
+        word_id,
+        "learning",
+        result.ease,
+        result.interval_days,
+        date.today() + timedelta(days=result.interval_days),
+        new_mastery,
+        new_streak,
+        False,
+    )
+    vocab_service.record_result(telegram_id, False)
+    feedback = f"괜찮아요, 다시 익혀봐요.\n{_word_reveal_text(item)}"
+    await send_message(chat_id, feedback)
+    await _finish_vocab_word(telegram_id, chat_id, user)
 
 
 async def _handle_vocab_unknown(telegram_id: str, chat_id: int, word_id: int) -> None:
@@ -1614,7 +1726,7 @@ async def _handle_custom_text_pasted(telegram_id: str, chat_id: int, user, sessi
     if word_items:
         await send_message(chat_id, f"핵심 단어 {len(word_items)}개를 찾았어요. 카드로 확인해볼게요.")
         first = vocab_service.start_session(telegram_id, word_items)
-        await _send_word_card(chat_id, first)
+        await _send_word_card(telegram_id, chat_id, first)
         return
 
     # 추출된 단어가 없으면(짧은 텍스트, 쉬운 어휘 등) 카드 단계를 건너뛰고 바로 해석 단계로.
@@ -1733,7 +1845,7 @@ async def _handle_school_assignment_pasted(telegram_id: str, chat_id: int, user,
     if word_items:
         await send_message(chat_id, f"핵심 단어 {len(word_items)}개를 찾았어요. 카드로 확인해볼게요.")
         first = vocab_service.start_session(telegram_id, word_items)
-        await _send_word_card(chat_id, first)
+        await _send_word_card(telegram_id, chat_id, first)
         return
 
     # 추출된 단어가 없으면(짧은 지문, 쉬운 어휘 등) 카드 단계를 건너뛰고 바로 문법해설/예상문제 단계로.

@@ -15,9 +15,24 @@ class FakeUserWordsRepo:
         self.known_topic_words: list[dict] = []
         # 사용자별로 다른 어휘 레벨을 시뮬레이션하고 싶을 때만 채운다: {user_id: (median_rank, count)}
         self.mastered_stats_by_user: dict[int, tuple] = mastered_stats_by_user or {}
+        self.get_due_review_words_calls: list[tuple] = []
 
-    async def get_due_review_words(self, user_id, today, limit=None):
-        return self.due_rows[:limit] if limit is not None else self.due_rows
+    async def get_due_review_words(self, user_id, today, limit=None, current_vocab_level=None):
+        self.get_due_review_words_calls.append((user_id, today, limit, current_vocab_level))
+        # 실제 SQL(app/repo/user_words.py)과 동일한 우선순위 로직: 요청 레벨보다 명백히 어려운
+        # 단어(row["level"])를 완전히 배제하지 않고 뒤로만 보낸다(안정 정렬 — 동순위 내 원래
+        # due_rows 순서/최신도는 그대로 유지).
+        order = {"beginner": 0, "intermediate": 1, "advanced": 2}
+
+        def priority(row):
+            if current_vocab_level is None:
+                return 0
+            word_ord = order.get(row.get("level"), 0)
+            user_ord = order.get(current_vocab_level, 0)
+            return max(word_ord - user_ord, 0)
+
+        rows = sorted(self.due_rows, key=priority)
+        return rows[:limit] if limit is not None else rows
 
     async def get_new_words(self, user_id, level, limit, learning_mode="GENERAL", min_rank=None, max_rank=None):
         return self.new_rows[:limit]
@@ -201,9 +216,10 @@ def _callback_update(telegram_id: int, data: str) -> dict:
     }
 
 
-def _due_row(word_id, word, meaning_ko, mastery="review", consecutive_correct=2):
+def _due_row(word_id, word, meaning_ko, mastery="review", consecutive_correct=2, level="beginner"):
     """기본값(mastery="review")은 이미 학습단계를 졸업해 정규 SRS 사이클에 들어간 흔한 경우를
-    나타낸다 — 학습단계 중인 단어(재확인 대기)를 흉내내려면 mastery="learning_step_2" 등을 넘길 것."""
+    나타낸다 — 학습단계 중인 단어(재확인 대기)를 흉내내려면 mastery="learning_step_2" 등을 넘길 것.
+    level="advanced" 등을 넘기면 실사용 사례("subsidiary" 등 legacy 단어)를 흉내낼 수 있다."""
     return {
         "word_id": word_id,
         "word": word,
@@ -211,7 +227,7 @@ def _due_row(word_id, word, meaning_ko, mastery="review", consecutive_correct=2)
         "pronunciation": "/test/",
         "example_sentence": f"This is {word}.",
         "example_translation": "예문입니다.",
-        "level": "beginner",
+        "level": level,
         "ease": 1.7,
         "interval_days": 2,
         "mastery": mastery,
@@ -234,6 +250,62 @@ def test_vocab_session_start_message_separates_review_and_new_counts(monkeypatch
     assert "복습 2개" in start_message
     assert "신규 1개" in start_message
     assert "총 3개" in start_message
+
+
+def test_legacy_advanced_review_word_is_deprioritized_behind_appropriate_review(monkeypatch):
+    """실사용 사고 재현("subsidiary" 등): 사용자의 현재 어휘레벨(beginner)보다 명백히 어려운
+    legacy 복습 단어가, 같은 날 더 늦게 등록된 적정 난이도 복습 단어보다 먼저 나오면 안 된다 —
+    완전히 배제하는 게 아니라 우선순위만 뒤로 보낸다."""
+    legacy_hard = _due_row(90, "subsidiary", "자회사", level="advanced")
+    appropriate = _due_row(91, "dog", "개", level="beginner")
+    # due_rows 순서를 일부러 legacy가 먼저 오게 둔다(실제로도 더 오래 밀려 있는 쪽이 legacy일
+    # 가능성이 높음) — 그래도 결과 큐에서는 적정 난이도가 먼저 나와야 한다.
+    due_rows = [legacy_hard, appropriate]
+    fake_users, fake_user_words, sent = _wire(monkeypatch, due_rows=due_rows)
+    telegram_id = "710"
+    _setup_general_user(fake_users, telegram_id)
+
+    run(router.handle_update({"message": {"chat": {"id": 710}, "text": "/단어학습"}}))
+
+    first_item = vocab_service.current_item(telegram_id)
+    assert first_item.word_id == 91  # 적정 난이도(dog)가 legacy(subsidiary)보다 먼저
+
+    # 요청이 실제로 사용자의 현재 어휘레벨을 실어 날랐는지도 확인(격리 검증의 전제).
+    assert fake_user_words.get_due_review_words_calls[-1][3] == "beginner"
+
+
+def test_legacy_advanced_word_still_appears_when_no_appropriate_reviews_left(monkeypatch):
+    """완전히 배제하는 것은 아니다 — 적정 난이도 복습이 없으면 legacy 단어도 결국 나와야 한다
+    (데이터 유실/영구 은닉 방지)."""
+    legacy_hard = _due_row(92, "subsidiary", "자회사", level="advanced")
+    due_rows = [legacy_hard]
+    fake_users, fake_user_words, sent = _wire(monkeypatch, due_rows=due_rows)
+    telegram_id = "711"
+    _setup_general_user(fake_users, telegram_id)
+
+    run(router.handle_update({"message": {"chat": {"id": 711}, "text": "/단어학습"}}))
+
+    first_item = vocab_service.current_item(telegram_id)
+    assert first_item.word_id == 92  # 대체할 적정 난이도 복습이 없으니 legacy라도 나옴
+
+
+def test_legacy_word_deprioritization_does_not_change_srs_or_isolation(monkeypatch):
+    """우선순위 재정렬은 순서만 바꿀 뿐, SRS 기록(ease/interval/next_review_date)이나
+    사용자별 격리에는 영향을 주면 안 된다."""
+    legacy_hard = _due_row(93, "subsidiary", "자회사", level="advanced")
+    appropriate = _due_row(94, "dog", "개", level="beginner")
+    fake_users, fake_user_words, sent = _wire(monkeypatch, due_rows=[legacy_hard, appropriate])
+    telegram_id = "712"
+    _setup_general_user(fake_users, telegram_id)
+
+    run(router.handle_update({"message": {"chat": {"id": 712}, "text": "/단어학습"}}))
+    # 복습 단어(is_new=False)는 이제 recall 카드로 나가므로 실제 버튼은 recallknown이다.
+    run(router.handle_update(_callback_update(712, "vocab:recallknown:94")))
+
+    call = fake_user_words.progress_calls[0]
+    user_id, word_id = call[0], call[1]
+    assert word_id == 94  # 방금 답한 단어(dog)의 기록만 남아야 한다 — subsidiary는 안 건드림
+    assert user_id == fake_users.users[telegram_id]["id"]  # user_id 격리
 
 
 def test_word_card_shows_meaning_and_mnemonic_and_emoji_immediately(monkeypatch):
@@ -311,7 +383,8 @@ def test_vocab_known_word_in_learning_step_2_graduates_to_real_srs_interval(monk
 
     run(router.handle_update({"message": {"chat": {"id": 611}, "text": "/단어학습"}}))
     sent.clear()
-    run(router.handle_update(_callback_update(611, "vocab:known:70")))
+    # 복습(is_new=False) 카드는 이제 recall 카드로 나가므로 실제 버튼은 recallknown이다.
+    run(router.handle_update(_callback_update(611, "vocab:recallknown:70")))
 
     call = fake_user_words.progress_calls[0]
     _, status, ease, interval_days, _, mastery, consecutive_correct, is_correct = call[1:]

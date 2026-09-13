@@ -4,11 +4,20 @@ from typing import Any
 from app.db import get_pool
 
 
-async def get_due_review_words(user_id: int, today: date, limit: int | None = None) -> list[dict[str, Any]]:
+async def get_due_review_words(
+    user_id: int, today: date, limit: int | None = None, current_vocab_level: str | None = None
+) -> list[dict[str, Any]]:
     """limit을 주면(app.srs.DAILY_REVIEW_LIMIT) 가장 오래 밀린 것부터 그만큼만 반환한다 —
     복습 대상이 하루치를 훨씬 넘게 쌓여도(예: 테스트를 여러 날에 걸쳐 함) 한 번에 전부 쏟아지지
     않게 하기 위함(사용자 버그리포트). 그날 못 나간 나머지는 next_review_date가 그대로라 다음날
-    다시 조회 시 자연히 최우선으로 다시 포함된다 — 데이터 유실 없음."""
+    다시 조회 시 자연히 최우선으로 다시 포함된다 — 데이터 유실 없음.
+
+    current_vocab_level을 주면(app.vocab.level 기준) 실사용 사례(구시스템이 placement_level만으로
+    생성한 legacy 단어 — 예: "subsidiary" 등 GRE급 단어가 지금은 beginner인 사용자의 복습 큐를
+    매일 지배하던 문제) 대응: 사용자의 현재 어휘 레벨보다 명백히 어려운 단어를 완전히 배제하지는
+    않되(다음날 다시 자연히 재평가되므로 next_review_date는 절대 안 건드림, 데이터 손실 없음)
+    정상 난이도 복습보다 뒤로 정렬해 하루 상한 안에서 우선순위를 낮춘다. None이면(호출부가 아직
+    안 넘기는 기존 호출 등) 기존과 동일하게 next_review_date 순서만 사용한다."""
     pool = get_pool()
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
@@ -20,11 +29,25 @@ async def get_due_review_words(user_id: int, today: date, limit: int | None = No
                        w.mnemonic, w.example_sentences, w.emoji
                 from user_words uw
                 join words w on w.id = uw.word_id
-                where uw.user_id = %s and uw.next_review_date <= %s and uw.status != 'new'
-                order by uw.next_review_date
-                limit %s
+                where uw.user_id = %(user_id)s and uw.next_review_date <= %(today)s and uw.status != 'new'
+                order by
+                    case
+                        when %(current_vocab_level)s is null then 0
+                        else greatest(
+                            (case w.level when 'advanced' then 2 when 'intermediate' then 1 else 0 end) -
+                            (case %(current_vocab_level)s when 'advanced' then 2 when 'intermediate' then 1 else 0 end),
+                            0
+                        )
+                    end,
+                    uw.next_review_date
+                limit %(limit)s
                 """,
-                (user_id, today, limit),
+                {
+                    "user_id": user_id,
+                    "today": today,
+                    "current_vocab_level": current_vocab_level,
+                    "limit": limit,
+                },
             )
             return await cur.fetchall()
 

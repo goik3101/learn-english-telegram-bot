@@ -69,6 +69,18 @@ def current_stage(telegram_id: str) -> str | None:
     return session.stage if session else None
 
 
+def enter_card_stage(telegram_id: str) -> None:
+    """신규 단어(첫 노출) 카드 — start_session/advance가 이미 기본값으로 "card"를 넣어두지만,
+    호출부에서 명시적으로 다시 세팅할 수 있도록 노출."""
+    _sessions[telegram_id].stage = "card"
+
+
+def enter_recall_stage(telegram_id: str) -> None:
+    """V2 학습 엔진(복습 recall): 이미 학습단계를 지난 단어(is_new=False)가 SRS 복습으로 다시
+    나올 때, 뜻을 먼저 가리고 회상을 요구하는 단계 — [기억남]/[모르겠음] 콜백만 받는다."""
+    _sessions[telegram_id].stage = "recall"
+
+
 def enter_mcq_stage(telegram_id: str, choices: list[str], correct_index: int) -> None:
     session = _sessions[telegram_id]
     session.stage = "mcq"

@@ -4,6 +4,7 @@ from typing import Any
 
 from app.ai.gemini_client import generate_json
 from app.content import sentence_difficulty
+from app.vocab import level as vocab_level
 
 logger = logging.getLogger(__name__)
 
@@ -354,16 +355,48 @@ _TOPIC_WORD_PROMPT_TEMPLATE = """너는 영어 학습 콘텐츠 제작자다. �
 ]"""
 
 
+# 실사용 사례("subsidiary" 등 GRE급 단어가 beginner 사용자에게 나온 사고): AI가 요청한 level을
+# 못 지켜도 코드가 못 잡으면 그대로 사용자에게 간다 — 최대 이만큼만 재시도한다(reading/grammar의
+# generate -> validate -> regenerate 패턴과 동일한 철학, 완전히 막지는 않고 fail-open 유지).
+_MAX_TOPIC_WORD_LEVEL_ATTEMPTS = 2
+
+
 async def generate_topic_words(level: str, topic: str, count: int, learning_mode: str = "GENERAL") -> list[dict]:
-    """회화 사전 단어학습: 오늘의 대화 주제와 관련된 핵심 단어를 생성한다(최초 1회, 이후 캐싱)."""
+    """회화 사전 단어학습: 오늘의 대화 주제와 관련된 핵심 단어를 생성한다(최초 1회, 이후 캐싱).
+
+    생성된 단어의 frequency_rank가 요청한 level에 명백히 안 맞으면(app.vocab.level의 보수적
+    밴드 기준) 걸러내고, 목표 개수를 못 채웠으면 같은 프롬프트로 최대
+    _MAX_TOPIC_WORD_LEVEL_ATTEMPTS회까지 더 시도한다. _is_valid_word()(형식 검증)와는 독립적인
+    별도 단계 — 형식은 멀쩡해도 난이도가 안 맞을 수 있기 때문이다."""
     prompt = _TOPIC_WORD_PROMPT_TEMPLATE.format(
         level=level, level_desc=LEVEL_DESCRIPTIONS[level], topic=topic, count=count, tone_note=tone_note(learning_mode)
     )
-    raw = await generate_json(prompt)
-    items = _parse_json_array(raw)
-    valid = [item for item in items if _is_valid_word(item)]
-    if len(valid) < len(items):
-        logger.warning("dropped %d malformed topic word items for topic %s", len(items) - len(valid), topic)
+
+    async def _generate_once() -> list[dict]:
+        raw = await generate_json(prompt)
+        items = _parse_json_array(raw)
+        valid = [item for item in items if _is_valid_word(item)]
+        if len(valid) < len(items):
+            logger.warning("dropped %d malformed topic word items for topic %s", len(items) - len(valid), topic)
+        return valid
+
+    accepted: dict[str, dict] = {}
+    for _ in range(_MAX_TOPIC_WORD_LEVEL_ATTEMPTS):
+        for item in await _generate_once():
+            key = item["word"].lower()
+            if key in accepted:
+                continue
+            if vocab_level.is_word_too_hard_for_level(item.get("frequency_rank"), level):
+                logger.warning(
+                    "dropped topic word '%s' (frequency_rank=%s) too hard for requested level %s (topic=%s)",
+                    item["word"], item.get("frequency_rank"), level, topic,
+                )
+                continue
+            accepted[key] = item
+        if len(accepted) >= count:
+            break
+
+    valid = list(accepted.values())[:count]
     for item in valid:
         _derive_singular_example(item)
     return valid
